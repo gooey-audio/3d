@@ -1,0 +1,61 @@
+name: release
+
+# Tag vX.Y.Z: CLI binaries and the wasm package as release assets.
+# Consumers pin by URL (speakers: the CLI; waveopt: the wasm tarball in package.json).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  cli:
+    strategy:
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-14, target: x86_64-apple-darwin, env: "CMAKE_OSX_ARCHITECTURES=x86_64" }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: build
+        run: env ${{ matrix.env }} cargo build --release -p castkit-cli --target ${{ matrix.target }}
+      - name: package
+        run: |
+          name=castkit-${GITHUB_REF_NAME}-${{ matrix.target }}
+          mkdir "$name"
+          cp target/${{ matrix.target }}/release/castkit README.md LICENSE-MIT LICENSE-APACHE "$name/"
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: castkit-*.tar.gz*
+
+  wasm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: ./.github/actions/llvm20
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.126
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: scripts/build-wasm.sh target/pkg
+      - run: node crates/castkit-wasm/tests/node.mjs target/pkg fixtures
+      - name: package
+        run: |
+          cd target/pkg && npm pack && mv castkit-wasm-*.tgz ../../castkit-wasm-${GITHUB_REF_NAME}.tgz
+          cd ../.. && shasum -a 256 castkit-wasm-*.tgz > castkit-wasm-${GITHUB_REF_NAME}.tgz.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: castkit-wasm-*.tgz*

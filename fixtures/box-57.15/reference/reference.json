@@ -1,0 +1,98 @@
+{
+ "generator": "waveopt_studio.mouldkit, manifold3d 3.5.4",
+ "parts": {
+  "core": {
+   "volume_mm3": 220837.17161938676,
+   "bounds": [
+    [
+     -65.25,
+     -85.25,
+     0.0
+    ],
+    [
+     65.25,
+     85.25,
+     10.0
+    ]
+   ],
+   "genus": 4,
+   "pieces": 1,
+   "frame_volume_mm3": 220837.17161938673
+  },
+  "half-R": {
+   "volume_mm3": 97232.60496666195,
+   "bounds": [
+    [
+     -15.875,
+     -85.25,
+     0.0
+    ],
+    [
+     15.875,
+     85.25,
+     68.25
+    ]
+   ],
+   "genus": 4,
+   "pieces": 1,
+   "frame_volume_mm3": 97232.60496666194
+  },
+  "half-L": {
+   "volume_mm3": 98840.67054705732,
+   "bounds": [
+    [
+     -15.875,
+     -85.25,
+     0.0
+    ],
+    [
+     15.875,
+     85.25,
+     65.25
+    ]
+   ],
+   "genus": 4,
+   "pieces": 1,
+   "frame_volume_mm3": 98840.67054705732
+  }
+ },
+ "release": {
+  "core": {
+   "undercut_cm3_per_mm": 0.0,
+   "overlap_5mm_cm3": 0.0,
+   "locked": false,
+   "pull": [
+    0.0,
+    0.0,
+    1.0
+   ]
+  },
+  "half-R": {
+   "undercut_cm3_per_mm": 0.0,
+   "overlap_5mm_cm3": 0.0,
+   "locked": false,
+   "pull": [
+    1.0,
+    0.0,
+    0.0
+   ]
+  },
+  "half-L": {
+   "undercut_cm3_per_mm": 0.0,
+   "overlap_5mm_cm3": 0.0,
+   "locked": false,
+   "pull": [
+    -1.0,
+    0.0,
+    0.0
+   ]
+  }
+ },
+ "bolt_z": [
+  11.875
+ ],
+ "bolt_y": 75.25,
+ "lip_bolt_x": 46.625,
+ "seam_bolts": 2,
+ "vents": 0
+}

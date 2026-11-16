@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release --workspace
+      - run: cargo build --release -p castkit-cli
+      - name: castkit build --check on every fixture
+        run: |
+          for spec in fixtures/*/spec.json; do
+            target/release/castkit build "$spec" --check
+          done
+      - name: STL bytes against the committed hashes (recorded, not enforced yet)
+        run: |
+          for spec in fixtures/*/spec.json; do
+            target/release/castkit build "$spec" --check --strict || echo "::warning::$spec: STL bytes differ on ${{ matrix.os }}"
+          done
+
+  msrv:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace
+
+  wasm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/llvm20
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.126
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: scripts/build-wasm.sh target/pkg
+      - run: node crates/castkit-wasm/tests/node.mjs target/pkg fixtures
+      - run: ls -l target/pkg
