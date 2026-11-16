@@ -53,7 +53,7 @@
   "ok": true,
   "parts": [
     {
-      "est_g": 152.0,
+      "est_g": 151.0,
       "file": "core.stl",
       "genus": 4,
       "name": "core",
@@ -65,19 +65,19 @@
         "free_standing": [
           {
             "at_xy_mm": [
-              38.1,
-              -31.8
-            ],
-            "height_mm": 27.0,
-            "width_mm": 6.0
-          },
-          {
-            "at_xy_mm": [
               -38.1,
               -31.8
             ],
-            "height_mm": 2.5,
-            "width_mm": 12.7
+            "height_mm": 2.0,
+            "width_mm": 8.2
+          },
+          {
+            "at_xy_mm": [
+              38.1,
+              -31.8
+            ],
+            "height_mm": 28.5,
+            "width_mm": 6.0
           }
         ],
         "material": "pla",
@@ -108,8 +108,8 @@
         170.5,
         44.4
       ],
-      "stl_sha256": "0f7df2568aac71880afa96bb34ee3ff6e27e55e05b952f04ff20f27b5d19aa1a",
-      "volume_mm3": 305449.9
+      "stl_sha256": "3959fcce6c45e030d258924742c845e5914475abcfc40d61c6e7fd4dd2fcaeff",
+      "volume_mm3": 305039.9
     },
     {
       "est_g": 62.0,
@@ -311,7 +311,7 @@
     }
   ],
   "pour": {
-    "cast_volume_cm3": 387.271,
+    "cast_volume_cm3": 387.681,
     "fill_height_mm": 31.75,
     "vents": 0
   },

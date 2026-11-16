@@ -12,7 +12,7 @@ worked examples are in gooey-audio/3d `fixtures/`:
   a counterbore.
 - `hs-slab/`: a real part, the 002 horn slab from gooey-audio/speakers
   (`002/bracket/build_slab.py`). It has a 1/16 in top chamfer, a through slot for a
-  ply blade, and two tapered screw holes with flat counterbores, which the core
+  ply blade, and two tapered screw holes with 82° countersinks (flush #12 flat heads), which the core
   moulds as printed pins.
 
 ## 1. Pick the method by shape
@@ -68,8 +68,15 @@ castkit check part.stl --material pla
     before printing.
   - **TPU:** tall pins topple, so use greased steel dowel pins through the mould
     floor.
-- **Screw seats:** flat counterbores and pan heads, never countersinks (a cone wedges
-  concrete apart). A counterbore moulds as a short, stable boss.
+- **Screw seats:** either works in PLA.
+  - **Countersink:** gives a flush flat head. Use 82° for US flat heads. It moulds
+    as a cone under the pin, narrowing as it rises, so it prints without support.
+    Run the hole up into the cone so they meet at an angle, not at a shared edge
+    (`hs-slab`).
+  - **Flat counterbore and pan head:** a cone wedges concrete apart, so with a
+    countersink keep about 15 mm of concrete round the hole and snug the screw,
+    never drive it hard.
+  - **TPU:** a cone round a dowel tapers to an unprintable edge, so use counterbores.
 - **Tangencies:** never let booleaned surfaces meet tangentially; offset by ≥ 0.3 mm
   or make them coaxial at different radii.
 - **Improve castkit itself** if something's missing (gooey-audio/3d, with a golden

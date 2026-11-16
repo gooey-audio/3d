@@ -2,7 +2,7 @@
  "generator": "waveopt_studio.mouldkit (branch bhurlow/mouldkit-split-mould), manifold3d 3.5.5",
  "parts": {
   "core": {
-   "volume_mm3": 305449.93111612706,
+   "volume_mm3": 305039.864707196,
    "bounds": [
     [
      -65.25,
@@ -17,7 +17,7 @@
    ],
    "genus": 4,
    "pieces": 1,
-   "frame_volume_mm3": 305449.931116127
+   "frame_volume_mm3": 305039.864707196
   },
   "half-R": {
    "volume_mm3": 125416.4676352597,
@@ -58,7 +58,7 @@
  },
  "release": {
   "core": {
-   "undercut_cm3_per_mm": 4.440892098500626e-18,
+   "undercut_cm3_per_mm": 0.0,
    "overlap_5mm_cm3": 0.0,
    "locked": false,
    "pull": [
