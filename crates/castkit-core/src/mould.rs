@@ -403,7 +403,40 @@ pub fn split_mould(
     square_ears: bool,
 ) -> Result<Split, String> {
     let z_part = z_part.unwrap_or(body.bounds().1[2]);
+    check_z_part(body, z_part)?;
     frame(body, cast.unwrap_or(body), z_part, k, nut_trap, square_ears)
+}
+
+/// Closer than this to the parting plane without lying on it, part vertices
+/// leave slivers once the parts are stored as float32 and welded.
+pub const Z_PART_CLEARANCE: f64 = 0.01;
+
+/// A parting plane that grazes part edges (an explicit `z_part` at the foot of
+/// a chamfer, say: the part arrives as float32, so its vertices sit a few
+/// hundred nanometres off the plane) cuts sliver triangles that fail the
+/// postcondition. Refuse it up front with a fix, not a vertex count.
+fn check_z_part(body: &Solid, z_part: f64) -> Result<(), String> {
+    let near: Vec<f64> = body
+        .to_mesh()
+        .verts
+        .iter()
+        .map(|v| v[2])
+        .filter(|z| {
+            let d = (z - z_part).abs();
+            d > 0.0 && d < Z_PART_CLEARANCE
+        })
+        .collect();
+    if let Some(z) = near.first() {
+        return Err(format!(
+            "z_part {z_part} is {:.1e} mm from {} part vertices (e.g. z = {z}); \
+             move it at least 0.05 mm off them, e.g. z_part = {:.4} (below a chamfer's foot, \
+             so the core moulds the chamfer)",
+            (z - z_part).abs(),
+            near.len(),
+            z_part - 0.5
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
