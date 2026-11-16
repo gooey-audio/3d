@@ -7,8 +7,13 @@ description: Choose, design, check and print moulds for casting concrete, resin 
 
 The goal is the cast part: concrete or resin is the material that shows, and the
 mould is a tool, so it should be quick and reliable to make, not a showpiece. The
-worked example is the synthetic slab in `fixtures/slab-m5-square-ears/` of
-gooey-audio/3d: a 100 x 100 x 30 mm slab with a through slot and a counterbore.
+worked examples are in gooey-audio/3d `fixtures/`:
+- `slab-m5-square-ears/`: a synthetic 100 x 100 x 30 mm slab with a through slot and
+  a counterbore.
+- `hs-slab/`: a real part, the 002 horn slab from gooey-audio/speakers
+  (`002/bracket/build_slab.py`). It has a 1/16 in top chamfer, a through slot for a
+  ply blade, and two tapered screw holes with 82° countersinks (flush #12 flat heads), which the core
+  moulds as printed pins.
 
 ## 1. Pick the method by shape
 
@@ -45,20 +50,33 @@ castkit check part.stl --material pla
   along them. castkit centres the part in x and y.
 - **`material` is required** (`pla` or `tpu`): it sets the checker's limits and
   the weight estimate.
-- **Part above edge chamfers:** set `z_part` to the foot of any chamfer on the core
-  face, so the core moulds the chamfer and the halves don't end in a knife edge.
+- **Part below edge chamfers:** set `z_part` about 0.5 mm below the foot of any
+  chamfer on the core face, so the core moulds the chamfer and the halves don't end
+  in a knife edge. Not exactly at the foot: the part arrives as float32, its edge
+  vertices sit nanometres off the plane, and the cut leaves slivers. castkit refuses
+  a `z_part` within 0.01 mm of part vertices and suggests a value.
 - **`cast`:** an optional second STL, the part less cast-in pins; defaults to the part.
 - **`k`:** overrides of wall 12, base 10, ear 20, flange 8, bolt 5.5, pocket 14,
   bolt_spacing 50, vent 3, vent_spacing 40, key 3, key_fit 0.3, segments 32,
   nut_af, nut_fit (cups: wall 6, floor 5). `bolts` sets bolt, pocket and nut_af together.
 - **Small holes:**
-  - **PLA:** model the hole in the cast part, tapered about 0.5° (wider at the
-    core). The split frame turns it into a printed pin on the core that pulls
-    straight out. A 6 mm pin 30 mm tall prints fine.
+  - **PLA:** model the hole in the cast part, through to the open top and tapered
+    about 0.5° (wider at the core). The split frame turns it into a printed pin on
+    the core that pulls straight out, and the report counts it under
+    `holes.cast`. A 6 mm pin 30 mm tall prints fine (`hs-slab`: Ø6.6 tapering to
+    Ø6.0). If the part STL has no holes, the mould has none: check `holes.cast`
+    before printing.
   - **TPU:** tall pins topple, so use greased steel dowel pins through the mould
     floor.
-- **Screw seats:** flat counterbores and pan heads, never countersinks (a cone wedges
-  concrete apart). A counterbore moulds as a short, stable boss.
+- **Screw seats:** either works in PLA.
+  - **Countersink:** gives a flush flat head. Use 82° for US flat heads. It moulds
+    as a cone under the pin, narrowing as it rises, so it prints without support.
+    Run the hole up into the cone so they meet at an angle, not at a shared edge
+    (`hs-slab`).
+  - **Flat counterbore and pan head:** a cone wedges concrete apart, so with a
+    countersink keep about 15 mm of concrete round the hole and snug the screw,
+    never drive it hard.
+  - **TPU:** a cone round a dowel tapers to an unprintable edge, so use counterbores.
 - **Tangencies:** never let booleaned surfaces meet tangentially; offset by ≥ 0.3 mm
   or make them coaxial at different radii.
 - **Improve castkit itself** if something's missing (gooey-audio/3d, with a golden

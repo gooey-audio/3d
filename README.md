@@ -12,7 +12,7 @@ tool. Apps expose it; this repo has no UI.
 crates/castkit-core   geometry, checker, request/response types (no file I/O)
 crates/castkit-cli    `castkit build|check`
 crates/castkit-wasm   the same request/response for Node (wasm32-unknown-unknown)
-fixtures/             synthetic parts, Python-reference outputs, castkit reports
+fixtures/             synthetic and real parts, Python-reference outputs, castkit reports
 skill/cast-moulds/    agent skill: choosing, building, checking and printing moulds
 ```
 
@@ -46,6 +46,9 @@ A spec (paths relative to the spec file):
   (waveguide styles) are milestone 6 and rejected for now.
 - The part is given in the casting frame after `rotate_deg`: open top at its
   lowest z, core pulls +z, seam on x = 0. castkit centres it in x and y.
+- `z_part` (optional, default the part's top): the parting plane. castkit refuses one
+  within 0.01 mm of part vertices (an edge it would graze); move it at least
+  0.05 mm off, e.g. 0.5 mm below a chamfer's foot.
 - `material` is required. `k` overrides the defaults: wall 12, base 10, ear 20,
   flange 8, bolt 5.5, pocket 14, bolt_spacing 50, vent 3, vent_spacing 40, key 3,
   key_fit 0.3, segments 32, nut_af 8, nut_fit 0.3; cups use wall 6 and floor 5.
@@ -90,7 +93,9 @@ node crates/castkit-wasm/tests/node.mjs target/pkg fixtures
 `fixtures/<name>/` holds `spec.json`, the input `part.stl`, `reference/` (the
 Python reference's output in print pose and its numbers, exported by a script
 kept in the private waveopt repo) and `out/report.json` (castkit's own committed
-report; its STLs are not committed). The golden test requires, per part, the same
+report; its STLs are not committed). `hs-slab` is a real part (the speakers 002
+horn slab): the only fixture with through holes, so it is the one that covers
+holes moulded as printed pins on the core. The golden test requires, per part, the same
 piece count and genus as the reference, bounds within 1e-4 mm and a
 symmetric-difference volume at most 1e-6 of the part's. It also rebuilds every
 report and compares it with the committed one.
@@ -115,7 +120,7 @@ Defaults give the same output.
 | Milestone | State |
 |---|---|
 | 1. Kernel and wasm spike | Done: `manifold-csg` with `unstable-wasm-uu` works; no `Kernel` trait needed |
-| 2. Goldens from the Python reference | Done: 7 synthetic fixtures, 20 parts |
+| 2. Goldens from the Python reference | Done: 7 synthetic fixtures + the real `hs-slab`, 23 parts |
 | 3. `castkit-core` port (split, cup, release, poses, checker) | Done: 8 mouldkit + 2 checker cases ported, plus extras |
 | 4. CLI, spec, report, `--check`, release CI | Done (section SVGs not done) |
 | 5. speakers switch | Not started (in speakers) |

@@ -158,3 +158,29 @@ fn key_sits_clear_of_a_single_bolt() {
     assert_eq!(mould::key_z(&[11.0], 0.0, 30.0, &k), 11.0 + 7.0 + 3.0 + 1.0);
     assert_eq!(mould::key_z(&[20.0], 0.0, 25.0, &k), 20.0 - 11.0);
 }
+
+#[test]
+fn z_part_grazing_part_edges_is_refused_with_a_fix() {
+    // A slab with a 1.5 mm chamfer round its high-z face, read through float32
+    // like an STL: a parting plane at the chamfer's foot sits a few hundred nm
+    // off its vertices, which used to fail the postcondition with a bare
+    // vertex count.
+    let foot = 30.0 - 1.5;
+    let mut pts = vec![];
+    for (h, z) in [(50.0, 0.0), (50.0, foot), (48.5, 30.0)] {
+        for (sx, sy) in [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)] {
+            pts.push([sx * h, sy * h, z]);
+        }
+    }
+    let body = Solid::hull_points(&pts);
+    let f32_body = castkit_core::api::import("part", &Mesh::from_stl(&body.to_mesh().to_stl()).unwrap()).unwrap();
+    let grazing = foot + 2e-7; // what float32 rounding leaves between plane and edge
+    let err = match mould::split_mould(&f32_body, None, Some(grazing), &K::default(), false, false) {
+        Err(e) => e,
+        Ok(_) => panic!("a z_part grazing the chamfer's foot should be refused"),
+    };
+    assert!(err.contains("move it at least 0.05 mm"), "{err}");
+    // Half a millimetre below the foot, the core moulds the chamfer and it builds.
+    let s = mould::split_mould(&f32_body, None, Some(foot - 0.5), &K::default(), false, false).unwrap();
+    assert_eq!(s.parts.len(), 3);
+}

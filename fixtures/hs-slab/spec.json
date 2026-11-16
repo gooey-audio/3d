@@ -1,0 +1,15 @@
+{
+ "castkit": 1,
+ "part": "part.stl",
+ "method": "split",
+ "material": "pla",
+ "bolts": "M5",
+ "square_ears": true,
+ "nut_trap": true,
+ "k": {
+  "wall": 8.0,
+  "base": 12.7
+ },
+ "out": "out/",
+ "z_part": 29.6625
+}
