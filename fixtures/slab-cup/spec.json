@@ -1,0 +1,7 @@
+{
+ "castkit": 1,
+ "part": "part.stl",
+ "method": "cup",
+ "material": "tpu",
+ "out": "out/"
+}

@@ -1,0 +1,286 @@
+{
+  "bolts": {
+    "clearance_mm": 4.5,
+    "hold_down": 4,
+    "hold_down_x_mm": 45.0,
+    "nut_trap": false,
+    "seam": 2,
+    "seam_y_mm": 72.0,
+    "seam_z_mm": [
+      11.0
+    ],
+    "size": "M4",
+    "square_ears": false
+  },
+  "castkit": "0.1.0",
+  "frame": {
+    "centre_offset_mm": [
+      0.0,
+      0.0
+    ],
+    "xb": 62.0,
+    "yb": 62.0,
+    "z_part": 30.0
+  },
+  "holes": {
+    "cast": 0,
+    "to_drill": 0
+  },
+  "k": {
+    "base": 10.0,
+    "bolt": 4.5,
+    "bolt_spacing": 50.0,
+    "ear": 20.0,
+    "flange": 8.0,
+    "key": 3.0,
+    "key_fit": 0.3,
+    "nut_af": 7.0,
+    "nut_fit": 0.3,
+    "pocket": 12.0,
+    "segments": 32,
+    "vent": 3.0,
+    "vent_spacing": 40.0,
+    "wall": 12.0
+  },
+  "kernel": "manifold-csg 0.4.2 (manifold-csg-sys 3.5.106, Manifold 3.5)",
+  "keys": {
+    "fit_mm": 0.3,
+    "radius_mm": 3.0,
+    "z_mm": 21.0
+  },
+  "material": "pla",
+  "method": "split",
+  "ok": true,
+  "parts": [
+    {
+      "est_g": 100.0,
+      "file": "core.stl",
+      "genus": 4,
+      "name": "core",
+      "pieces": 1,
+      "printability": {
+        "base_contact_cm2": 198.9,
+        "bridged_cm2": 3.88,
+        "fails": [],
+        "free_standing": [],
+        "material": "pla",
+        "near_duplicate_vertices": 0,
+        "ok": true,
+        "overhang_cm2": 0.0,
+        "pieces": 1,
+        "size_mm": [
+          124.0,
+          164.0,
+          13.0
+        ],
+        "thin_wall_z_mm": [],
+        "watertight": true
+      },
+      "release": {
+        "locked": false,
+        "overlap_5mm_cm3": 0.0,
+        "pull": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "undercut_cm3_per_mm": 0.0
+      },
+      "size_mm": [
+        124.0,
+        164.0,
+        13.0
+      ],
+      "stl_sha256": "f45e68c0ff644bee00db51c05dedbf0aa1ab81161695d062728dddaa0c76d6b6",
+      "volume_mm3": 201133.6
+    },
+    {
+      "est_g": 61.0,
+      "file": "half-R.stl",
+      "genus": 4,
+      "name": "half-R",
+      "pieces": 1,
+      "printability": {
+        "base_contact_cm2": 40.4,
+        "bridged_cm2": 1.94,
+        "fails": [],
+        "free_standing": [
+          {
+            "at_xy_mm": [
+              11.0,
+              66.0
+            ],
+            "height_mm": 1.0,
+            "width_mm": 5.5
+          },
+          {
+            "at_xy_mm": [
+              7.5,
+              0.0
+            ],
+            "height_mm": 50.0,
+            "width_mm": 13.0
+          },
+          {
+            "at_xy_mm": [
+              11.0,
+              -77.6
+            ],
+            "height_mm": 4.5,
+            "width_mm": 7.8
+          },
+          {
+            "at_xy_mm": [
+              11.0,
+              77.6
+            ],
+            "height_mm": 4.5,
+            "width_mm": 7.8
+          },
+          {
+            "at_xy_mm": [
+              11.0,
+              -66.0
+            ],
+            "height_mm": 1.5,
+            "width_mm": 30.0
+          },
+          {
+            "at_xy_mm": [
+              0.0,
+              -66.0
+            ],
+            "height_mm": 0.5,
+            "width_mm": 5.8
+          }
+        ],
+        "material": "pla",
+        "near_duplicate_vertices": 0,
+        "ok": true,
+        "overhang_cm2": 0.55,
+        "pieces": 1,
+        "size_mm": [
+          30.0,
+          164.0,
+          65.0
+        ],
+        "thin_wall_z_mm": [],
+        "watertight": true
+      },
+      "release": {
+        "locked": false,
+        "overlap_5mm_cm3": 0.0,
+        "pull": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "undercut_cm3_per_mm": 0.0
+      },
+      "size_mm": [
+        30.0,
+        164.0,
+        65.0
+      ],
+      "stl_sha256": "bbd61920ffb6bd116bba4795238774a12ed2f7712392fd62846389e11b03e653",
+      "volume_mm3": 123427.5
+    },
+    {
+      "est_g": 61.0,
+      "file": "half-L.stl",
+      "genus": 4,
+      "name": "half-L",
+      "pieces": 1,
+      "printability": {
+        "base_contact_cm2": 40.4,
+        "bridged_cm2": 1.94,
+        "fails": [],
+        "free_standing": [
+          {
+            "at_xy_mm": [
+              -11.0,
+              66.0
+            ],
+            "height_mm": 4.5,
+            "width_mm": 19.8
+          },
+          {
+            "at_xy_mm": [
+              -7.5,
+              0.0
+            ],
+            "height_mm": 48.5,
+            "width_mm": 13.0
+          },
+          {
+            "at_xy_mm": [
+              -11.0,
+              -77.6
+            ],
+            "height_mm": 4.5,
+            "width_mm": 7.8
+          },
+          {
+            "at_xy_mm": [
+              -11.0,
+              77.6
+            ],
+            "height_mm": 4.5,
+            "width_mm": 7.8
+          },
+          {
+            "at_xy_mm": [
+              -11.0,
+              -66.0
+            ],
+            "height_mm": 0.5,
+            "width_mm": 30.0
+          },
+          {
+            "at_xy_mm": [
+              0.0,
+              -66.0
+            ],
+            "height_mm": 6.5,
+            "width_mm": 30.0
+          }
+        ],
+        "material": "pla",
+        "near_duplicate_vertices": 0,
+        "ok": true,
+        "overhang_cm2": 0.55,
+        "pieces": 1,
+        "size_mm": [
+          30.0,
+          164.0,
+          62.0
+        ],
+        "thin_wall_z_mm": [],
+        "watertight": true
+      },
+      "release": {
+        "locked": false,
+        "overlap_5mm_cm3": 0.0,
+        "pull": [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        "undercut_cm3_per_mm": 0.0
+      },
+      "size_mm": [
+        30.0,
+        164.0,
+        62.0
+      ],
+      "stl_sha256": "3ad87ac15b9965487e27b96c7f56ab8cd54b5d7be1a0f4c4e031a2061a4eb42b",
+      "volume_mm3": 123169.7
+    }
+  ],
+  "pour": {
+    "cast_volume_cm3": 280.163,
+    "fill_height_mm": 30.0,
+    "vents": 0
+  },
+  "schema": "castkit-report/v1"
+}

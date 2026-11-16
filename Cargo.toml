@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/castkit-core", "crates/castkit-cli", "crates/castkit-wasm"]
+default-members = ["crates/castkit-core", "crates/castkit-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gooey-audio/3d"
+
+[workspace.dependencies]
+castkit-core = { path = "crates/castkit-core" }
+# Pinned exactly: the crate is young, and every golden depends on Manifold's
+# triangulation. Only castkit_core::solid imports it.
+manifold-csg = { version = "=0.4.2", default-features = false }
+manifold-csg-sys = { version = "=3.5.106", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[profile.release-wasm]
+inherits = "release"
+opt-level = "s"

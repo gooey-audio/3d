@@ -1,0 +1,23 @@
+[package]
+name = "castkit-core"
+description = "Casting-mould geometry and printability checks (split moulds, cups) on Manifold"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Manifold's TBB-parallel booleans (native only). Off by default: see README, milestone 1.
+parallel = ["manifold-csg/parallel"]
+# wasm32-unknown-unknown build of Manifold (needs LLVM 20+ and cmake).
+wasm = ["manifold-csg/unstable-wasm-uu"]
+
+[dependencies]
+manifold-csg.workspace = true
+manifold-csg-sys.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true

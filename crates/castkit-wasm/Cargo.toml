@@ -1,0 +1,22 @@
+[package]
+name = "castkit-wasm"
+description = "castkit for Node (wasm32-unknown-unknown + wasm-bindgen)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+castkit-core.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "=0.2.126"
+
+# The wasm Manifold build is only switched on for the wasm target, so native
+# workspace builds never see the feature.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+castkit-core = { workspace = true, features = ["wasm"] }

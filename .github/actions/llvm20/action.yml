@@ -1,0 +1,11 @@
+name: LLVM 20 for wasm32-unknown-unknown
+description: clang, wasm-ld and libc++ 20, as manifold-csg's unstable-wasm-uu build needs
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        wget -q https://apt.llvm.org/llvm.sh
+        sudo bash llvm.sh 20
+        sudo apt-get install -y lld-20 libc++-20-dev libc++abi-20-dev
+        echo "WASM_CXX_SHIM_LLVM_BIN_DIR=/usr/lib/llvm-20/bin" >> "$GITHUB_ENV"
