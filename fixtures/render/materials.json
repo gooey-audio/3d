@@ -1,0 +1,407 @@
+{
+  "schema": "gooey-materials/v1",
+  "about": "Example finish library (gooey-materials/v1) for tests and ad hoc renders. Pass it with --library, or a project's gooey-3d.json `library`. Nothing in gooey-3d loads it implicitly.",
+  "materials": {
+    "wood/sapele": {
+      "label": "Sapele-veneer plywood / unpainted",
+      "color": "#8b4a2f",
+      "roughness": 0.8,
+      "grain": {
+        "color": "#5e2b19",
+        "period_mm": 20,
+        "edge_color": "#b0805a",
+        "ply_mm": 2.1
+      },
+      "render": {
+        "roughness": 0.7,
+        "clearcoat": 0.6,
+        "clearcoat_roughness": 0.3,
+        "texture": {
+          "kind": "wood",
+          "scale_mm": 0.45,
+          "strength": 0.6
+        },
+        "figure": {
+          "cut": "quarter",
+          "ring_mm": 2.2,
+          "log_mm": 220,
+          "contrast": 0.35,
+          "ribbon": 0.8,
+          "ribbon_mm": 18
+        }
+      }
+    },
+    "wood/walnut": {
+      "label": "Walnut veneer / oiled",
+      "color": "#5a3a26",
+      "roughness": 0.75,
+      "grain": {
+        "color": "#3a2416",
+        "period_mm": 14,
+        "edge_color": "#7a5236",
+        "ply_mm": 2.1
+      },
+      "render": {
+        "roughness": 0.6,
+        "clearcoat": 0.35,
+        "clearcoat_roughness": 0.35,
+        "texture": {
+          "kind": "wood",
+          "scale_mm": 0.6,
+          "strength": 0.6
+        },
+        "figure": {
+          "cut": "flat",
+          "ring_mm": 4.0,
+          "log_mm": 140,
+          "taper": 0.025,
+          "contrast": 0.75
+        }
+      }
+    },
+    "wood/oak": {
+      "label": "White oak / matte lacquer",
+      "color": "#c49a6c",
+      "roughness": 0.7,
+      "grain": {
+        "color": "#9c7046",
+        "period_mm": 10,
+        "ply_mm": 1000
+      },
+      "render": {
+        "roughness": 0.6,
+        "clearcoat": 0.15,
+        "clearcoat_roughness": 0.4,
+        "texture": {
+          "kind": "wood",
+          "scale_mm": 0.8,
+          "strength": 0.6
+        },
+        "figure": {
+          "cut": "flat",
+          "ring_mm": 3.0,
+          "log_mm": 170,
+          "taper": 0.02,
+          "contrast": 0.8
+        }
+      }
+    },
+    "wood/oak-light": {
+      "label": "Limed oak / matte lacquer",
+      "color": "#d4bf9c",
+      "roughness": 0.7,
+      "grain": {
+        "color": "#bba481",
+        "period_mm": 10,
+        "ply_mm": 1000
+      },
+      "render": {
+        "roughness": 0.6,
+        "clearcoat": 0.15,
+        "clearcoat_roughness": 0.4,
+        "texture": {
+          "kind": "wood",
+          "scale_mm": 0.8,
+          "strength": 0.6
+        },
+        "figure": {
+          "cut": "flat",
+          "ring_mm": 3.0,
+          "log_mm": 200,
+          "taper": 0.02,
+          "contrast": 0.6
+        }
+      }
+    },
+    "wood/oak-floor": {
+      "label": "Oak floorboards / satin",
+      "color": "#9c8468",
+      "roughness": 0.6,
+      "grain": {
+        "color": "#7a644c",
+        "period_mm": 10,
+        "ply_mm": 1000
+      },
+      "render": {
+        "roughness": 0.5,
+        "clearcoat": 0.3,
+        "clearcoat_roughness": 0.3,
+        "texture": {
+          "kind": "wood",
+          "scale_mm": 0.8,
+          "strength": 0.6
+        },
+        "figure": {
+          "cut": "flat",
+          "ring_mm": 3.0,
+          "log_mm": 160,
+          "taper": 0.025,
+          "contrast": 0.7
+        }
+      }
+    },
+    "wood/birch-ply": {
+      "label": "Birch plywood / clear matte",
+      "color": "#d8c29d",
+      "roughness": 0.75,
+      "grain": {
+        "color": "#b9a27a",
+        "period_mm": 9,
+        "edge_color": "#e6d6b8",
+        "ply_mm": 1.5
+      },
+      "render": {
+        "roughness": 0.65,
+        "clearcoat": 0.15,
+        "clearcoat_roughness": 0.45,
+        "texture": {
+          "kind": "wood",
+          "scale_mm": 0.35,
+          "strength": 0.6
+        },
+        "figure": {
+          "cut": "flat",
+          "ring_mm": 2.5,
+          "log_mm": 420,
+          "taper": 0.05,
+          "contrast": 0.35
+        }
+      }
+    },
+    "wood/branch": {
+      "label": "Dried branch",
+      "color": "#4a3a2c",
+      "roughness": 0.9,
+      "render": {
+        "texture": {
+          "kind": "fibre",
+          "scale_mm": 2.0,
+          "strength": 0.3
+        }
+      }
+    },
+    "paint/mdf-matte": {
+      "label": "MDF / painted, matte",
+      "color": "#6e7f93",
+      "roughness": 0.9,
+      "render": {
+        "roughness": 0.75,
+        "clearcoat": 0.1,
+        "clearcoat_roughness": 0.5
+      }
+    },
+    "paint/mdf-satin": {
+      "label": "MDF / painted, satin",
+      "color": "#6e7f93",
+      "roughness": 0.9,
+      "render": {
+        "roughness": 0.6,
+        "clearcoat": 0.3,
+        "clearcoat_roughness": 0.35
+      }
+    },
+    "paint/wall": {
+      "label": "Wall emulsion / flat",
+      "color": "#dcd7cd",
+      "roughness": 0.92
+    },
+    "paint/satin-white": {
+      "label": "Woodwork paint / satin white",
+      "color": "#efece6",
+      "roughness": 0.5
+    },
+    "paint/black-matte": {
+      "label": "Paint / matte black",
+      "color": "#1d1d1d",
+      "roughness": 0.8
+    },
+    "mdf/raw": {
+      "label": "MDF / raw",
+      "color": "#b8a58a",
+      "roughness": 0.9,
+      "render": {
+        "texture": {
+          "kind": "fibre",
+          "scale_mm": 1.5,
+          "strength": 0.15
+        }
+      }
+    },
+    "aluminium/brushed": {
+      "label": "Aluminium / brushed",
+      "color": "#c9cacc",
+      "roughness": 0.3,
+      "metalness": 1.0,
+      "render": {
+        "roughness": 0.28,
+        "texture": {
+          "kind": "brushed",
+          "scale_mm": 0.6,
+          "strength": 0.35,
+          "axis": "grain"
+        }
+      }
+    },
+    "aluminium/bead-blasted": {
+      "label": "Aluminium / bead blasted",
+      "color": "#b9bbbe",
+      "roughness": 0.45,
+      "metalness": 1.0
+    },
+    "aluminium/anodized-black": {
+      "label": "Aluminium / black anodized",
+      "color": "#2b2c2e",
+      "roughness": 0.4,
+      "metalness": 1.0,
+      "render": {
+        "roughness": 0.35
+      }
+    },
+    "aluminium/polished": {
+      "label": "Aluminium / polished",
+      "color": "#c9cacc",
+      "roughness": 0.25,
+      "metalness": 0.9,
+      "render": {
+        "roughness": 0.12,
+        "metalness": 1.0
+      }
+    },
+    "resin/epoxy-amber": {
+      "label": "Cast epoxy resin / clear amber",
+      "color": "#d9902f",
+      "roughness": 0.2,
+      "opacity": 0.85,
+      "render": {
+        "roughness": 0.12,
+        "clearcoat": 0.8,
+        "clearcoat_roughness": 0.05,
+        "opacity": 1.0,
+        "transmission": 0.35
+      }
+    },
+    "resin/epoxy-clear": {
+      "label": "Cast epoxy resin / water clear",
+      "color": "#eef2f2",
+      "roughness": 0.1,
+      "opacity": 0.5,
+      "render": {
+        "roughness": 0.04,
+        "clearcoat": 1.0,
+        "clearcoat_roughness": 0.02,
+        "opacity": 1.0,
+        "transmission": 0.85
+      }
+    },
+    "pla/matte": {
+      "label": "Printed PLA / matte",
+      "color": "#d9d9d9",
+      "roughness": 0.65,
+      "render": {
+        "roughness": 0.7,
+        "texture": {
+          "kind": "layers",
+          "scale_mm": 0.2,
+          "strength": 0.25,
+          "axis": "thickness"
+        }
+      }
+    },
+    "pla/silk": {
+      "label": "Printed PLA / silk",
+      "color": "#d9d9d9",
+      "roughness": 0.4,
+      "render": {
+        "roughness": 0.35,
+        "sheen": 0.25,
+        "texture": {
+          "kind": "layers",
+          "scale_mm": 0.2,
+          "strength": 0.2,
+          "axis": "thickness"
+        }
+      }
+    },
+    "fabric/wool": {
+      "label": "Wool rug",
+      "color": "#b7ad9c",
+      "roughness": 0.95,
+      "render": {
+        "sheen": 0.7,
+        "texture": {
+          "kind": "weave",
+          "scale_mm": 6.0,
+          "strength": 0.35
+        }
+      }
+    },
+    "fabric/book-cloth": {
+      "label": "Cloth book cover",
+      "color": "#7a3b2e",
+      "roughness": 0.8,
+      "render": {
+        "sheen": 0.2,
+        "texture": {
+          "kind": "weave",
+          "scale_mm": 0.6,
+          "strength": 0.2
+        }
+      }
+    },
+    "ceramic/glazed": {
+      "label": "Glazed ceramic",
+      "color": "#e8e2d6",
+      "roughness": 0.3,
+      "render": {
+        "roughness": 0.35,
+        "clearcoat": 0.6,
+        "clearcoat_roughness": 0.08
+      }
+    },
+    "plastic/black": {
+      "label": "Black plastic / satin",
+      "color": "#1a1a1a",
+      "roughness": 0.5
+    },
+    "plastic/vinyl": {
+      "label": "Vinyl record",
+      "color": "#111111",
+      "roughness": 0.2,
+      "render": {
+        "roughness": 0.25,
+        "clearcoat": 0.7,
+        "clearcoat_roughness": 0.06,
+        "texture": {
+          "kind": "grooves",
+          "scale_mm": 0.6,
+          "strength": 0.2
+        }
+      }
+    },
+    "paper/print": {
+      "label": "Art print / matte paper",
+      "color": "#e9e4da",
+      "roughness": 0.85,
+      "render": {
+        "texture": {
+          "kind": "fibre",
+          "scale_mm": 0.8,
+          "strength": 0.08
+        }
+      }
+    },
+    "paper/page": {
+      "label": "Book pages",
+      "color": "#ede6d3",
+      "roughness": 0.9,
+      "render": {
+        "texture": {
+          "kind": "layers",
+          "scale_mm": 0.3,
+          "strength": 0.2,
+          "axis": "y"
+        }
+      }
+    }
+  }
+}

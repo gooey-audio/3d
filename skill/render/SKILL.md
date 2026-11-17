@@ -1,0 +1,93 @@
+---
+name: render
+description: Path-trace STLs, assembly manifests and scene files with the gooey-3d CLI (gooey-audio/3d, `gooey-3d render`). Covers quick looks at one part in different finishes, views and lighting, contact sheets of many STLs, committed renders kept current with `sync`/`check`, and finish libraries. Use whenever you change or generate a 3D part and need to see it, compare finishes, or refresh a project's renders.
+---
+
+# Rendering with gooey-3d
+
+`gooey-3d render` is a headless GPU path tracer (Metal on macOS, Vulkan elsewhere).
+Install a release binary from gooey-audio/3d, or
+`cargo install --git https://github.com/gooey-audio/3d gooey-3d`. Check it with
+`gooey-3d --version`. It ships no finishes and knows no project: you pass STLs, and
+a finish library if you want named finishes.
+
+## 1. Look at a part you just changed
+
+```sh
+gooey-3d render stl part.stl --out .context/part.png                      # grey, iso, studio
+gooey-3d render stl part.stl --view front --out .context/part-front.png
+gooey-3d render stl part.stl --material '#3d5a80' --out .context/blue.png
+gooey-3d render stl a.stl b.stl@'#aa3322' --out .context/asm.png          # an assembly in place
+```
+
+- Write experiments under the working directory's scratch area (`.context/`), never
+  over committed renders. **Open the PNG and look at it** before you report.
+- These are fast: 1200 px at 256 spp takes well under a second for small parts. Use
+  `--spp 1024 --width 1600` for something to show people.
+- `--up z` is the default (CAD and slicer exports). If the part lies on its side, try
+  `--up y`.
+- Views: `iso`, `front`, `side`, `top`, `rear`, `rear-iso`, or a direction `x,y,z`
+  from the part toward the camera (+Y up after `--up`).
+- `--env room` stages the part in a room (needs the room finishes in the library).
+  `--env studio` is the default, and `--env file.hdr` uses an HDRI. Use
+  `--background transparent` for an RGBA cut-out.
+
+## 2. Compare finishes, views or many parts: contact sheets
+
+```sh
+gooey-3d render sheet parts/*.stl --out .context/sheet.png
+gooey-3d render sheet part.stl --view iso --view top --view front --out .context/views.png
+gooey-3d render sheet part.stl --library lib.json \
+    --material pla/matte --material wood/walnut --material aluminium/brushed --out .context/finishes.png
+```
+
+You get one row per STL and one tile per view × material. Labels are the shortest
+unique path plus the varying view/material. `sheet.json` next to the PNG maps each
+tile's rectangle to its input, view and material. Tiles are framed to their own part,
+so sizes aren't comparable across tiles. Use `gooey-3d render bounds a.stl b.stl` for
+real dimensions (mm, no GPU).
+
+## 3. Materials
+
+A material spec is one of:
+
+- a library finish: `wood/walnut`. It needs `--library FILE` or a project
+  `gooey-3d.json`; `gooey-3d render materials` lists them.
+- a colour: `#c0a080`, plain and moderately rough.
+- JSON: `'{"finish":"paint/mdf-satin","color":"#334455"}'` recolours a finish;
+  `'{"color":"#c8c8c8","metalness":1,"roughness":0.25}'` is a custom look. Other keys:
+  `clearcoat`, `clearcoat_roughness`, `transmission`, `ior`, `opacity`, `sheen`,
+  `texture`, `figure`, `grain`.
+
+Fine-tune one STL render with `--set materials.m0.roughness=0.2`. Materials are
+`m0`, `m1`, … in order of first use. An example library covering wood, paint,
+aluminium, resin, PLA and room finishes is `fixtures/render/materials.json` in
+gooey-audio/3d.
+
+## 4. Projects with committed renders
+
+A repo with a `gooey-3d.json` (`library` + `renders` globs of scene files) commits
+renders with input-hash sidecars:
+
+```sh
+gooey-3d render check                    # no GPU; exit 1 if any shot is stale/missing/orphaned
+gooey-3d render sync                     # re-render only the stale shots, delete orphans
+gooey-3d render scene path/to/scene.json --shot hero --out .context/x.png --spp 128 --set camera.fov=30
+gooey-3d render info path/to/scene.json  # resolved scene, bounds, adapter
+```
+
+- After changing any input (STL, manifest, scene, library entry), run `sync`, look
+  at the changed PNGs, and commit them with their `.json` sidecars. `check` must pass.
+- Never hand-edit a sidecar, and never `--set` over committed output. Overrides
+  require `--out`.
+- Scene files (`gooey-render/v1`) are documented in the gooey-audio/3d README: shots
+  as JSON merge patches, camera `fit`/`aperture_mm`, studio/hdri/room environments,
+  `isolate`, `variants`, `explode`.
+
+## 5. Automation
+
+- Add `--json` for a result on stdout: output paths, sizes, adapter and seconds
+  (`sheet` adds the index path). Logs stay on stderr.
+- Exit codes: 0 ok, 1 stale renders (`check`), 2 any error (the message is on stderr).
+- There is no GPU on hosted CI: run `check` there (no GPU) and `sync` locally or on a
+  GPU runner. `RENDER_ADAPTER=software` forces the slow software fallback.

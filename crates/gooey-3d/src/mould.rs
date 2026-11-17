@@ -1,102 +1,38 @@
-//! castkit: casting moulds from a JSON spec.
+//! `gooey-3d mould`: casting moulds from a JSON spec (castkit-core).
 //!
-//!   castkit build spec.json [--check] [--strict] [--out DIR]
-//!   castkit check part.stl --material pla|tpu [--bed 256]
-//!   castkit --version
+//!   gooey-3d mould build spec.json [--check] [--strict] [--out DIR]
+//!   gooey-3d mould check part.stl --material pla|tpu [--bed 256]
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crate::flags::parse;
 use castkit_core::api::{self, Request, Spec};
-use castkit_core::{KERNEL, Material, Mesh, VERSION};
+use castkit_core::{Material, Mesh};
 
-const USAGE: &str = "usage:
-  castkit build SPEC.json [--check] [--strict] [--out DIR]
+pub use castkit_core::{KERNEL, VERSION};
+
+pub const USAGE: &str = "usage:
+  gooey-3d mould build SPEC.json [--check] [--strict] [--out DIR]
       Build the mould a spec asks for: one binary STL per part (print pose) and
       report.json in the spec's `out` directory (relative to the spec).
       --check   rebuild and compare with the committed report.json; write nothing
       --strict  with --check, an STL hash mismatch is a failure, not a warning
-  castkit check PART.stl --material pla|tpu [--bed 256]
-      Printability of one part in print position; JSON report on stdout.
-  castkit --version";
+  gooey-3d mould check PART.stl --material pla|tpu [--bed 256]
+      Printability of one part in print position; JSON report on stdout.";
 
 /// Relative tolerance for numbers in `--check`.
 const CHECK_TOL: f64 = 1e-6;
 
-fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("castkit: {e}");
-            ExitCode::from(2)
-        }
-    }
-}
-
-fn run(args: &[String]) -> Result<ExitCode, String> {
+pub fn run(args: &[String]) -> Result<ExitCode, String> {
     match args.first().map(String::as_str) {
-        Some("--version" | "-V" | "version") => {
-            println!("castkit {VERSION} ({KERNEL})");
-            Ok(ExitCode::SUCCESS)
-        }
         Some("build") => build(&args[1..]),
         Some("check") => check(&args[1..]),
-        Some("-h" | "--help" | "help") => {
+        None | Some("-h" | "--help" | "help") => {
             println!("{USAGE}");
             Ok(ExitCode::SUCCESS)
         }
-        _ => Err(format!("expected a command\n{USAGE}")),
-    }
-}
-
-struct Flags {
-    positional: Vec<String>,
-    switches: Vec<String>,
-    values: Vec<(String, String)>,
-}
-
-fn parse(args: &[String], with_value: &[&str]) -> Result<Flags, String> {
-    let mut f = Flags {
-        positional: vec![],
-        switches: vec![],
-        values: vec![],
-    };
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        if let Some((k, v)) = a.split_once('=').filter(|_| a.starts_with("--")) {
-            f.values.push((k.to_string(), v.to_string()));
-        } else if with_value.contains(&a.as_str()) {
-            let v = it.next().ok_or(format!("{a} needs a value"))?;
-            f.values.push((a.clone(), v.clone()));
-        } else if a.starts_with("--") {
-            f.switches.push(a.clone());
-        } else {
-            f.positional.push(a.clone());
-        }
-    }
-    Ok(f)
-}
-
-impl Flags {
-    fn value(&self, k: &str) -> Option<&str> {
-        self.values.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
-    }
-    fn has(&self, k: &str) -> bool {
-        self.switches.iter().any(|s| s == k)
-    }
-    fn reject_unknown(&self, switches: &[&str], values: &[&str]) -> Result<(), String> {
-        for s in &self.switches {
-            if !switches.contains(&s.as_str()) {
-                return Err(format!("unknown option {s}"));
-            }
-        }
-        for (k, _) in &self.values {
-            if !values.contains(&k.as_str()) {
-                return Err(format!("unknown option {k}"));
-            }
-        }
-        Ok(())
+        Some(other) => Err(format!("unknown mould command `{other}`\n{USAGE}")),
     }
 }
 
@@ -140,10 +76,10 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
             eprintln!("{level}: {}: STL bytes changed, report numbers agree", d.path);
         }
         if !real.is_empty() || (f.has("--strict") && !hash.is_empty()) {
-            eprintln!("castkit check: {} differs from a rebuild", report_path.display());
+            eprintln!("mould check: {} differs from a rebuild", report_path.display());
             return Ok(ExitCode::FAILURE);
         }
-        println!("castkit check: {} matches a rebuild", report_path.display());
+        println!("mould check: {} matches a rebuild", report_path.display());
         return Ok(ExitCode::SUCCESS);
     }
 

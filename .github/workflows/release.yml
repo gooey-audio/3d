@@ -1,7 +1,7 @@
 name: release
 
 # Tag vX.Y.Z: CLI binaries and the wasm package as release assets.
-# Consumers pin by URL (speakers: the CLI; waveopt: the wasm tarball in package.json).
+# Consumers pin by URL (speakers: the gooey-3d CLI; waveopt: the wasm tarball in package.json).
 on:
   push:
     tags: ["v*"]
@@ -24,17 +24,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: build
-        run: env ${{ matrix.env }} cargo build --release -p castkit-cli --target ${{ matrix.target }}
+        run: env ${{ matrix.env }} cargo build --release -p gooey-3d --target ${{ matrix.target }}
       - name: package
         run: |
-          name=castkit-${GITHUB_REF_NAME}-${{ matrix.target }}
+          name=gooey-3d-${GITHUB_REF_NAME}-${{ matrix.target }}
           mkdir "$name"
-          cp target/${{ matrix.target }}/release/castkit README.md LICENSE-MIT LICENSE-APACHE "$name/"
+          cp target/${{ matrix.target }}/release/gooey-3d README.md LICENSE-MIT LICENSE-APACHE "$name/"
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
       - uses: softprops/action-gh-release@v2
         with:
-          files: castkit-*.tar.gz*
+          files: gooey-3d-*.tar.gz*
 
   wasm:
     runs-on: ubuntu-24.04

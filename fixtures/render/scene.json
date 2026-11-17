@@ -1,0 +1,18 @@
+{
+  "schema": "gooey-render/v1",
+  "manifest": "assembly.json",
+  "output": { "dir": "renders", "prefix": "fixture" },
+  "width": 640,
+  "aspect": 1.25,
+  "spp": 128,
+  "background": "#2a2a2a",
+  "explode": 0.6,
+  "environment": { "type": "studio", "rotation_deg": 15 },
+  "shots": [
+    { "name": "hero" },
+    { "name": "top", "camera": { "view": "top" } },
+    { "name": "room", "explode": 0, "aspect": 1.5, "width": 640,
+      "environment": { "type": "room", "rotation_deg": null, "sideboard": {} },
+      "camera": { "view": [0.4, 0.3, 1.2], "fov": 30, "padding": 1.2 } }
+  ]
+}

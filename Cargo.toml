@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/castkit-core", "crates/castkit-cli", "crates/castkit-wasm"]
-default-members = ["crates/castkit-core", "crates/castkit-cli"]
+members = ["crates/castkit-core", "crates/castkit-wasm", "crates/render", "crates/gooey-3d"]
+default-members = ["crates/castkit-core", "crates/render", "crates/gooey-3d"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ repository = "https://github.com/gooey-audio/3d"
 
 [workspace.dependencies]
 castkit-core = { path = "crates/castkit-core" }
+gooey-render = { path = "crates/render" }
 # Pinned exactly: the crate is young, and every golden depends on Manifold's
 # triangulation. Only castkit_core::solid imports it.
 manifold-csg = { version = "=0.4.2", default-features = false }
@@ -20,6 +21,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+# Renderer (crates/render).
+ab_glyph = "0.2"
+bytemuck = { version = "1.25", features = ["derive"] }
+glam = "0.34"
+glob = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "hdr", "exr"] }
+naga = { version = "30", features = ["wgsl-in"] }
+pollster = "1.0"
+rayon = "1.12"
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "vulkan", "wgsl"] }
 
 [profile.release]
 lto = true
@@ -28,3 +39,8 @@ codegen-units = 1
 [profile.release-wasm]
 inherits = "release"
 opt-level = "s"
+
+# `cargo run` debug builds: optimize dependencies (wgpu, naga, image, Manifold) so the
+# BVH build and shader compile stay fast; app code keeps fast incremental builds.
+[profile.dev.package."*"]
+opt-level = 3
