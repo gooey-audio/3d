@@ -8,6 +8,9 @@ and holds no project designs, only synthetic fixtures.
 - **castkit** (`gooey-3d mould`): casting-mould geometry and printability checks, on
   [Manifold](https://github.com/elalish/manifold) via
   [`manifold-csg`](https://crates.io/crates/manifold-csg).
+- **gooey-cad** (`gooey-3d cad`): parametric parts as [Replicad](https://replicad.xyz)
+  scripts (JavaScript on OpenCascade), built into validated STL + STEP by a separate
+  worker process.
 - **gooey-render** (`gooey-3d render`): a headless GPU path tracer (wgpu: Metal on
   macOS, Vulkan elsewhere) for STLs, assembly manifests and scene files.
 
@@ -15,9 +18,12 @@ and holds no project designs, only synthetic fixtures.
 crates/castkit-core   mould geometry, checker, request/response types (no file I/O)
 crates/castkit-wasm   the same request/response for Node (wasm32-unknown-unknown)
 crates/render         gooey-render: path tracer, scenes, manifests, finish libraries, sheets
-crates/gooey-3d       the `gooey-3d` CLI: `mould build|check`, `render stl|sheet|scene|...`
-fixtures/             synthetic parts and reports (castkit), fixtures/render (renderer)
+crates/cad            gooey-cad: runs the cad-worker, validates its output with castkit
+crates/gooey-3d       the `gooey-3d` CLI: `mould build|check`, `cad build|check|params`, `render stl|sheet|scene|...`
+cad-worker/           gooey-cad-worker: Replicad + OpenCascade WASM in a Bun executable (TypeScript)
+fixtures/             synthetic parts and reports (castkit), fixtures/cad (part scripts), fixtures/render (renderer)
 skill/cast-moulds/    agent skill: choosing, building, checking and printing moulds
+skill/cad/            agent skill: part scripts, cad build/check/params
 skill/render/         agent skill: ad hoc renders, contact sheets, scenes
 ```
 
@@ -27,6 +33,8 @@ skill/render/         agent skill: ad hoc renders, contact sheets, scenes
   and x86_64, Linux x86_64), or `cargo install --git https://github.com/gooey-audio/3d gooey-3d`.
   Building needs cmake and a C++ compiler; Manifold is linked statically.
   `--no-default-features --features render` builds a render-only binary without them.
+  Release archives include `gooey-cad-worker` next to `gooey-3d` (for `gooey-3d cad`);
+  from source, build it with `cad-worker/build.sh` (needs [bun](https://bun.sh)).
 - **Node:** pin the release tarball by URL in `package.json`:
   `"castkit-wasm": "https://github.com/gooey-audio/3d/releases/download/vX.Y.Z/castkit-wasm-vX.Y.Z.tgz"`.
 
@@ -79,6 +87,80 @@ const report = JSON.parse(out.report_json);
 for (let i = 0; i < out.len; i++) fs.writeFileSync(`${out.name(i)}.stl`, out.stl(i));
 const rep = JSON.parse(ck.check(stlBytes, "pla", 256));
 ```
+
+## CAD parts
+
+A part is a [Replicad](https://replicad.xyz) script: JavaScript on OpenCascade, in git,
+where "add M5 holes" or "fillet these edges" is an edit to the program.
+
+```sh
+gooey-3d cad build fixtures/cad/brace.js --out out/brace               # brace.stl, brace.step, report.json
+gooey-3d cad build fixtures/cad/brace.js --out out/b140 --set length=140
+gooey-3d cad check fixtures/cad/brace.js --set filletR=3                # build + validate, keep nothing
+gooey-3d cad params fixtures/cad/brace.js                               # defaultParams, paramRanges
+```
+
+A script exports `main(replicad, params)` returning a solid, `defaultParams`, and
+optionally `paramRanges = {name: [min, max]}` and `expect = {pieces, genus}` (or a
+function of the params). See [`fixtures/cad/brace.js`](fixtures/cad/brace.js) and
+[`skill/cad/SKILL.md`](skill/cad/SKILL.md).
+
+What a build checks:
+
+- **Params.** `--set` names must exist in `defaultParams`. Values are read as the
+  default's type and must be finite. Numbers must lie within `paramRanges` unless
+  you pass `--allow-out-of-range`.
+- **Validity.** OpenCascade's BRepCheck must pass. Then the STL, welded like a
+  slicer, must be watertight and accepted by Manifold. The report records pieces,
+  genus (through-holes, summed over pieces), volume, bounds and near-duplicate
+  vertices.
+- **Intent.** A wrong `expect` fails the build, for example when an in-range
+  parameter set merges two holes.
+- **Printability.** castkit's checker runs as for a printed mould part (PLA by
+  default, `--material`, `--bed`). It is reported but never fails a build.
+- **Guards.** A build fails above 2,000 B-rep faces (before meshing) or 2 M
+  triangles (right after tessellation). Mesh tolerance is
+  max(0.01 mm, 2e-5 × bounding-box diagonal); `--tolerance` overrides it.
+
+`report.json` also holds the face table: for each B-rep face, its surface type,
+centre, normal and the STL triangle range that tessellates it. It also has the
+worker and kernel versions and the seconds spent in each stage. Outputs are staged
+and renamed into place only when everything passes; a failed build writes nothing.
+
+Errors are `{kind, message, line, column}`, with the line in your script:
+
+```
+$ gooey-3d cad build brace.js --out out --set filletR=25 --allow-out-of-range
+gooey-3d: cad: brace.js:64:36: kernel error: OpenCascade StdFail_NotDone: BRep_API: command not done
+```
+
+| Exit | Meaning |
+|---|---|
+| 0 | ok |
+| 2 | `script`, `syntax`, `params`, `kernel`, `limits`, `invalid` or `expect` error, or bad usage |
+| 3 | `timeout`: no result within `--timeout` (default 30 s); the worker was killed |
+| 4 | `worker` missing or unstartable, `crash`, or `trap` |
+
+`--json` prints `{"ok": true, "outputs": {...}, "report": {...}}`, or
+`{"ok": false, "error": {...}}`, on stdout.
+
+**The worker.** `gooey-cad-worker` is a Bun single-file executable with Replicad,
+OpenCascade (WASM) and Manifold (WASM) embedded. It needs no Node and no
+node_modules. `gooey-3d` runs `$GOOEY_CAD_WORKER` if set (a path, or a command
+such as `node cad-worker/src/worker.ts`), else `gooey-cad-worker` next to its own
+executable. Each command starts one worker and kills it on timeout (start-up 10 s).
+A worker is never reused after a timeout or trap. It talks JSON lines on stdio;
+the protocol is documented in [`cad-worker/src/worker.ts`](cad-worker/src/worker.ts).
+
+```sh
+cad-worker/build.sh                        # host -> cad-worker/dist/gooey-cad-worker (~87 MB)
+cad-worker/build.sh bun-linux-x64 bun-darwin-x64    # cross: dist/gooey-cad-worker-<os>-<arch>
+cp cad-worker/dist/gooey-cad-worker target/release/   # or: export GOOEY_CAD_WORKER=$PWD/cad-worker/dist/gooey-cad-worker
+(cd cad-worker && bunx tsc --noEmit)       # typecheck
+```
+
+A brace builds in about 0.9 s from a cold start (0.1 s of that is worker start-up)
+on an M4 Pro.
 
 ## Renders
 
@@ -237,6 +319,7 @@ an M4 Pro.
 
 ```sh
 cargo test --release --workspace     # unit tests, ported reference tests, goldens, render fixture
+cad-worker/build.sh                  # then the cad tests run too (they skip without a worker)
 scripts/build-wasm.sh target/pkg     # needs LLVM 20 + wasm-ld (macOS: brew install llvm@20 lld@20)
 node crates/castkit-wasm/tests/node.mjs target/pkg fixtures
 (cd fixtures/render && cargo run --release -p gooey-3d -- render sync)   # after renderer changes
@@ -289,6 +372,7 @@ Defaults give the same output.
 | 7. `castkit-wasm` + release tarball | Done |
 | 8. waveopt switch | Not started (in waveopt; needs 6) |
 | 9. Rendering | Done: path tracer moved from speakers, `gooey-3d render` (stl, sheet, scene, sync, check) |
+| 10. Replicad parts | `gooey-3d cad build/check/params` and the worker done; helper library, `cad diff` and surface modifiers next |
 
 Milestone 1 measurements (macOS arm64 host):
 
@@ -305,4 +389,7 @@ Milestone 1 measurements (macOS arm64 host):
 
 ## Licence
 
-MIT OR Apache-2.0, matching `manifold-csg`.
+MIT OR Apache-2.0, matching `manifold-csg`. `gooey-cad-worker` embeds OpenCascade
+(LGPL-2.1) and the Bun runtime (MIT, with LGPL JavaScriptCore). See
+[`THIRD_PARTY_LICENSES`](THIRD_PARTY_LICENSES); release archives carry it with the
+full licence texts.
