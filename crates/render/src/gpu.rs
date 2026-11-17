@@ -2,6 +2,7 @@
 //! progressive dispatch loop that accumulates samples and reads the sums back.
 
 use crate::env::{Light, MAX_LIGHTS};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 
@@ -46,6 +47,44 @@ pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter: String,
+    /// The trace pipeline, compiled on first use and reused by every later [`trace`].
+    pipeline: OnceLock<Pipeline>,
+}
+
+/// The compiled shader and its bind group layout (group 0).
+struct Pipeline {
+    pipeline: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
+}
+
+impl Gpu {
+    /// Compile the trace shader once per device: on some drivers (NVIDIA/Vulkan) this
+    /// costs ~0.5 s, which per-call compilation paid on every tile of a sheet.
+    fn pipeline(&self) -> Result<&Pipeline, String> {
+        if let Some(p) = self.pipeline.get() {
+            return Ok(p);
+        }
+        let dev = &self.device;
+        let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("trace.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("trace"),
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let layout = pipeline.get_bind_group_layout(0);
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            return Err(format!("GPU setup failed: {e}"));
+        }
+        // A racing thread may have stored one first; either is equivalent.
+        Ok(self.pipeline.get_or_init(|| Pipeline { pipeline, layout }))
+    }
 }
 
 /// Hardware adapter, else a software one (lavapipe/WARP) so GPU-less CI runners can still
@@ -83,6 +122,7 @@ pub fn open() -> Result<Gpu, String> {
         device,
         queue,
         adapter: name,
+        pipeline: OnceLock::new(),
     })
 }
 
@@ -109,19 +149,8 @@ pub fn trace(gpu: &Gpu, mut inp: Inputs, progress: bool) -> Result<Vec<[f32; 4]>
             accum_size >> 20
         ));
     }
+    let Pipeline { pipeline, layout } = gpu.pipeline()?;
     let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
-    let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("trace.wgsl"),
-        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-    });
-    let pipeline = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("trace"),
-        layout: None,
-        module: &module,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
     let uniform = dev.create_buffer(&wgpu::BufferDescriptor {
         label: Some("params"),
         size: std::mem::size_of::<Params>() as u64,
@@ -165,7 +194,7 @@ pub fn trace(gpu: &Gpu, mut inp: Inputs, progress: bool) -> Result<Vec<[f32; 4]>
     });
     let group = dev.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("trace"),
-        layout: &pipeline.get_bind_group_layout(0),
+        layout,
         entries: &entries,
     });
     if let Some(e) = pollster::block_on(scope.pop()) {
@@ -187,7 +216,7 @@ pub fn trace(gpu: &Gpu, mut inp: Inputs, progress: bool) -> Result<Vec<[f32; 4]>
         let mut enc = dev.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_compute_pass(&Default::default());
-            pass.set_pipeline(&pipeline);
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }
@@ -364,6 +393,14 @@ mod tests {
         }
         let half = furnace(material(0.5, 1.0, 0.0, 0.0)).unwrap();
         assert!((0.4..0.6).contains(&half), "grey diffuse: {half}");
+    }
+
+    #[test]
+    fn pipeline_is_compiled_once() {
+        let Ok(gpu) = open() else { return };
+        let a: *const Pipeline = gpu.pipeline().unwrap();
+        let b: *const Pipeline = gpu.pipeline().unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]
