@@ -1,9 +1,12 @@
-//! gooey-3d: casting moulds and path-traced renders from one CLI.
+//! gooey-3d: casting moulds, Replicad part builds and path-traced renders from one CLI.
 //!
 //!   gooey-3d mould build|check ...    casting moulds (castkit-core)
+//!   gooey-3d cad build|check|params ...  Replicad part scripts (gooey-cad + cad-worker)
 //!   gooey-3d render stl|sheet|scene|sync|check|info|bounds|materials ...
 //!   gooey-3d --version
 
+#[cfg(feature = "cad")]
+mod cad;
 mod flags;
 #[cfg(feature = "mould")]
 mod mould;
@@ -15,6 +18,7 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 usage: gooey-3d <command> ...
   mould    casting moulds from a JSON spec: build, check  (gooey-3d mould --help)
+  cad      Replicad part scripts to validated STL + STEP: build, check, params  (gooey-3d cad --help)
   render   path-traced images of STLs, manifests and scenes  (gooey-3d render --help)
   --version";
 
@@ -36,12 +40,16 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             println!("gooey-3d {}", env!("CARGO_PKG_VERSION"));
             #[cfg(feature = "mould")]
             println!("castkit {} ({})", mould::VERSION, mould::KERNEL);
+            #[cfg(feature = "cad")]
+            println!("gooey-cad {} (worker protocol {})", cad::VERSION, cad::PROTOCOL);
             #[cfg(feature = "render")]
             println!("gooey-render (renderer {})", gooey_render::RENDERER_VERSION);
             Ok(ExitCode::SUCCESS)
         }
         #[cfg(feature = "mould")]
         Some("mould") => mould::run(rest),
+        #[cfg(feature = "cad")]
+        Some("cad") => cad::run(rest),
         #[cfg(feature = "render")]
         Some("render") => render::run(rest),
         None | Some("-h" | "--help" | "help") => {
