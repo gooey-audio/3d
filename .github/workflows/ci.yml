@@ -21,7 +21,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # GPU tests skip themselves without an adapter; `gpu::` is skipped outright because
       # hosted runners have no GPU (or only a paravirtual one).
-      - run: cargo test --release --workspace -- --skip gpu::
+      - run: cargo test --release --workspace -- --skip 'gpu::'
       - run: cargo build --release -p gooey-3d
       - name: mould build --check on every fixture
         run: |
