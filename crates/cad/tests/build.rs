@@ -280,3 +280,44 @@ fn missing_or_crashing_workers_are_worker_errors() {
         assert!(e.message.contains("boom"), "{e}");
     }
 }
+
+/// A shell script standing in for the worker: prints `ready`, then `reply` to
+/// the first request, then lingers (the host must kill it).
+#[cfg(unix)]
+fn fake_worker(protocol: u32, reply: &str) -> WorkerCommand {
+    let script =
+        format!(r#"echo '{{"ready":true,"protocol":{protocol},"versions":{{}}}}'; read req; echo '{reply}'; sleep 30"#);
+    WorkerCommand {
+        program: "sh".into(),
+        args: vec!["-c".into(), script],
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn traps_kill_the_worker_and_protocol_mismatches_are_refused() {
+    let trap = fake_worker(
+        1,
+        r#"{"id":1,"ok":false,"error":{"kind":"trap","message":"WASM trap: unreachable","line":3}}"#,
+    );
+    let mut w = Worker::spawn(&trap, Duration::from_secs(5)).unwrap();
+    let dir = tmp();
+    let t = Instant::now();
+    let e = build_with(&mut w, &brace(), &Options::default(), dir.path()).unwrap_err();
+    assert_eq!((e.kind, e.line, e.exit_code()), (ErrorKind::Trap, Some(3), 4), "{e}");
+    assert!(!w.usable());
+    drop(w);
+    assert!(t.elapsed() < Duration::from_secs(5), "the lingering worker was killed");
+
+    let e = Worker::spawn(&fake_worker(2, "{}"), Duration::from_secs(5))
+        .err()
+        .unwrap();
+    assert_eq!(e.kind, ErrorKind::Worker);
+    assert!(e.message.contains("protocol 2"), "{e}");
+
+    let silent = WorkerCommand::parse("sh -c 'sleep 30'").unwrap();
+    let t = Instant::now();
+    let e = Worker::spawn(&silent, Duration::from_millis(500)).err().unwrap();
+    assert_eq!(e.kind, ErrorKind::Timeout, "{e}");
+    assert!(t.elapsed() < Duration::from_secs(3));
+}
