@@ -1,0 +1,293 @@
+{
+ "about": "Expected world bounds (mm, +Y up) of assembly.json, computed by a separate implementation of the placement rules.",
+ "cases": [
+  {
+   "name": "default",
+   "explode": 0.0,
+   "variants": {},
+   "hide_groups": [],
+   "instances": {
+    "base": {
+     "min": [
+      0.0,
+      0.0,
+      -20.0
+     ],
+     "max": [
+      40.0,
+      10.0,
+      0.0
+     ],
+     "mirrored": false
+    },
+    "turned": {
+     "min": [
+      50.0,
+      0.0,
+      -40.0
+     ],
+     "max": [
+      70.0,
+      10.0,
+      0.0
+     ],
+     "mirrored": false
+    },
+    "tilted": {
+     "min": [
+      -23.5499,
+      0.0,
+      -84.3239
+     ],
+     "max": [
+      26.5785,
+      29.5481,
+      -35.9046
+     ],
+     "mirrored": false
+    },
+    "mirrored": {
+     "min": [
+      -60.0,
+      0.0,
+      -20.0
+     ],
+     "max": [
+      -20.0,
+      30.0,
+      0.0
+     ],
+     "mirrored": true
+    },
+    "by-matrix": {
+     "min": [
+      5.0,
+      10.0,
+      25.0
+     ],
+     "max": [
+      35.0,
+      18.0,
+      55.0
+     ],
+     "mirrored": false
+    },
+    "lid": {
+     "min": [
+      0.0,
+      10.0,
+      -20.0
+     ],
+     "max": [
+      40.0,
+      20.0,
+      0.0
+     ],
+     "mirrored": false
+    },
+    "foot-puck": {
+     "min": [
+      5.0,
+      -8.0,
+      -25.0
+     ],
+     "max": [
+      35.0,
+      0.0,
+      5.0
+     ],
+     "mirrored": false
+    }
+   }
+  },
+  {
+   "name": "exploded",
+   "explode": 1.0,
+   "variants": {},
+   "hide_groups": [],
+   "instances": {
+    "base": {
+     "min": [
+      0.0,
+      0.0,
+      -20.0
+     ],
+     "max": [
+      40.0,
+      10.0,
+      0.0
+     ],
+     "mirrored": false
+    },
+    "turned": {
+     "min": [
+      50.0,
+      0.0,
+      -40.0
+     ],
+     "max": [
+      70.0,
+      10.0,
+      0.0
+     ],
+     "mirrored": false
+    },
+    "tilted": {
+     "min": [
+      -23.5499,
+      0.0,
+      -84.3239
+     ],
+     "max": [
+      26.5785,
+      29.5481,
+      -35.9046
+     ],
+     "mirrored": false
+    },
+    "mirrored": {
+     "min": [
+      -60.0,
+      0.0,
+      -20.0
+     ],
+     "max": [
+      -20.0,
+      30.0,
+      0.0
+     ],
+     "mirrored": true
+    },
+    "by-matrix": {
+     "min": [
+      5.0,
+      10.0,
+      25.0
+     ],
+     "max": [
+      35.0,
+      18.0,
+      55.0
+     ],
+     "mirrored": false
+    },
+    "lid": {
+     "min": [
+      0.0,
+      35.0,
+      -20.0
+     ],
+     "max": [
+      40.0,
+      45.0,
+      0.0
+     ],
+     "mirrored": false
+    },
+    "foot-puck": {
+     "min": [
+      5.0,
+      -8.0,
+      -25.0
+     ],
+     "max": [
+      35.0,
+      0.0,
+      5.0
+     ],
+     "mirrored": false
+    }
+   }
+  },
+  {
+   "name": "bracket-foot-no-covers",
+   "explode": 0.5,
+   "variants": {
+    "foot": "bracket"
+   },
+   "hide_groups": [
+    "covers"
+   ],
+   "instances": {
+    "base": {
+     "min": [
+      0.0,
+      0.0,
+      -20.0
+     ],
+     "max": [
+      40.0,
+      10.0,
+      0.0
+     ],
+     "mirrored": false
+    },
+    "turned": {
+     "min": [
+      50.0,
+      0.0,
+      -40.0
+     ],
+     "max": [
+      70.0,
+      10.0,
+      0.0
+     ],
+     "mirrored": false
+    },
+    "tilted": {
+     "min": [
+      -23.5499,
+      0.0,
+      -84.3239
+     ],
+     "max": [
+      26.5785,
+      29.5481,
+      -35.9046
+     ],
+     "mirrored": false
+    },
+    "mirrored": {
+     "min": [
+      -60.0,
+      0.0,
+      -20.0
+     ],
+     "max": [
+      -20.0,
+      30.0,
+      0.0
+     ],
+     "mirrored": true
+    },
+    "by-matrix": {
+     "min": [
+      5.0,
+      10.0,
+      25.0
+     ],
+     "max": [
+      35.0,
+      18.0,
+      55.0
+     ],
+     "mirrored": false
+    },
+    "foot-bracket": {
+     "min": [
+      0.0,
+      -30.0,
+      -20.0
+     ],
+     "max": [
+      40.0,
+      0.0,
+      0.0
+     ],
+     "mirrored": false
+    }
+   }
+  }
+ ]
+}

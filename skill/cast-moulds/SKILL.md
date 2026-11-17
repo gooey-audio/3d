@@ -1,6 +1,6 @@
 ---
 name: cast-moulds
-description: Choose, design, check and print moulds for casting concrete, resin or plaster parts (plinths, slabs, feet, waveguides). Picks wood forms, PLA split moulds, TPU cups or PLA master + silicone by shape; builds printed moulds with the castkit CLI (gooey-audio/3d); enforces printability with `castkit check`; covers Bambu A1 PLA and TPU printing. Use for any cast part, mould STL or mould print failure.
+description: Choose, design, check and print moulds for casting concrete, resin or plaster parts (plinths, slabs, feet, waveguides). Picks wood forms, PLA split moulds, TPU cups or PLA master + silicone by shape; builds printed moulds with the gooey-3d CLI (gooey-audio/3d, `gooey-3d mould`); enforces printability with `gooey-3d mould check`; covers Bambu A1 PLA and TPU printing. Use for any cast part, mould STL or mould print failure.
 ---
 
 # Casting moulds
@@ -22,8 +22,8 @@ gooey-audio/3d: a 100 x 100 x 30 mm slab with a through slot and a counterbore.
 
 ## 2. Build it with castkit, not a copy
 
-The mould geometry lives in **one place**: the `castkit` CLI from gooey-audio/3d
-(install a release binary, or `cargo install --git https://github.com/gooey-audio/3d castkit-cli`).
+The mould geometry lives in **one place**: castkit, run as `gooey-3d mould` from gooey-audio/3d
+(install a release binary, or `cargo install --git https://github.com/gooey-audio/3d gooey-3d`).
 Write the cast part as an STL, next to a spec, and build:
 
 ```json
@@ -34,9 +34,10 @@ Write the cast part as an STL, next to a spec, and build:
 ```
 
 ```sh
-castkit build mould.json            # one STL per part (print pose) + report.json in out/
-castkit build mould.json --check    # CI: rebuild and compare with the committed report.json
-castkit check part.stl --material pla
+gooey-3d mould build mould.json          # one STL per part (print pose) + report.json in out/
+gooey-3d mould build mould.json --check  # CI: rebuild and compare with the committed report.json
+gooey-3d mould check part.stl --material pla
+gooey-3d render sheet mould/*.stl --out mould/sheet.png   # look at what was built (see the render skill)
 ```
 
 - **Frame:** the part is given in the casting frame (after `rotate_deg`): the open
@@ -66,9 +67,9 @@ castkit check part.stl --material pla
 
 ## 3. Check every part (enforced)
 
-`castkit build` checks every part it writes and exits non-zero on any failure;
+`gooey-3d mould build` checks every part it writes and exits non-zero on any failure;
 `report.json` carries the full checker report per part. For STLs from elsewhere,
-run `castkit check part.stl --material pla|tpu`:
+run `gooey-3d mould check part.stl --material pla|tpu`:
 
 - closed, one piece, no vertices within 0.001 mm (a slicer welds them into pinches);
 - fits the A1's 256 mm bed, flat-bottom down (30 % of the footprint on the bed);

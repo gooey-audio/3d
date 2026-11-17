@@ -1,0 +1,6 @@
+{
+  "schema": "gooey-3d-project/v1",
+  "about": "Fixture project: the scene's committed shots live in renders/ and `gooey-3d render check` keeps them current.",
+  "library": "materials.json",
+  "renders": ["scene.json"]
+}

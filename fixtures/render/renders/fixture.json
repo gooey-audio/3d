@@ -1,0 +1,21 @@
+{
+  "adapter": "Apple M4 Pro (Metal)",
+  "height": 512,
+  "input_sha256": "0cfec3604bbbb8d6a401e5580720d5fc4b83c5c850a592b341ede7bd58d6f0e2",
+  "manifest": "assembly.json",
+  "png_sha256": "3ac1b523cbb3dd72f406e0589a1ac942eb06d21147ac8efc11e428ec871b293e",
+  "renderer_version": 3,
+  "scene": "scene.json",
+  "schema": "gooey-render-output/v2",
+  "seconds": {
+    "geometry": 0.0,
+    "gpu_init": 0.1,
+    "output": 0.0,
+    "total": 0.6,
+    "trace": 0.5
+  },
+  "shot": "hero",
+  "spp": 128,
+  "triangles": 468,
+  "width": 640
+}
