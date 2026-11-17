@@ -1,0 +1,22 @@
+{
+  "name": "gooey-cad-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "scripts": {
+    "build": "./build.sh",
+    "typecheck": "tsc --noEmit",
+    "worker": "bun src/worker.ts"
+  },
+  "dependencies": {
+    "manifold-3d": "3.5.5",
+    "replicad": "1.2.1",
+    "replicad-opencascadejs": "1.2.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "@types/node": "26.6.6",
+    "typescript": "5.9.3"
+  }
+}
