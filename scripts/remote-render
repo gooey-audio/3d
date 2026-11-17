@@ -1,0 +1,357 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["modal>=1.3"]
+# ///
+"""Render a gooey-3d contact sheet's tiles on Modal GPUs and compose the sheet locally.
+
+    scripts/remote-render job JOB.json --out SHEET.png [options]
+    scripts/remote-render sheet A.stl B.stl ... [render plan flags] --out SHEET.png [options]
+
+`job` renders an existing `gooey-3d-job/v1` file (from `gooey-3d render plan`). `sheet`
+plans one first, passing every flag it doesn't know to `render plan` (`--orbit 24`,
+`--view iso`, `--label-from id`, `--tile 600`, ...), and writes the job beside SHEET.png.
+
+Tiles land in `--tiles DIR` (default: `tiles/` beside SHEET.png) as `<id>.png` + `<id>.json`,
+then `gooey-3d render compose` writes SHEET.png and its `sheet.json` index. Nothing renders
+locally; the local binary only plans and composes (no GPU).
+
+One shard is the tiles of one STL (one GPU init each); `--shard-size N` splits bigger ones.
+Tiles already in the tile directory with a matching record are skipped (`--force` re-renders).
+A failed shard is listed, its tiles are labelled blanks on the sheet, and the exit code is 1
+unless `--allow-failed`. Exit 2 is any other error.
+
+Needs a Modal token (`modal token new`, or MODAL_TOKEN_ID / MODAL_TOKEN_SECRET) and the app
+deployed (`modal deploy modal/gooey_render.py`). See modal/README.md.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import time
+from typing import NoReturn
+
+APP = "gooey-render"
+FUNCTION = "render_shard"
+# GPU $/hour (modal billing rates, 2026-11). The estimate ignores CPU and memory.
+GPU_PRICE = {"T4": 0.59, "L4": 0.80, "A10": 1.10, "L40S": 1.95, "A100": 2.10, "H100": 3.95}
+
+
+def log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+def fail(msg: str) -> NoReturn:
+    log(f"remote-render: {msg}")
+    sys.exit(2)
+
+
+def find_binary(flag: str | None) -> str:
+    cand = flag or os.environ.get("GOOEY_3D") or shutil.which("gooey-3d")
+    if not cand:
+        fail("no gooey-3d binary: pass --gooey-3d PATH, set GOOEY_3D, or put it on PATH")
+    if not (os.path.isfile(cand) and os.access(cand, os.X_OK)):
+        fail(f"gooey-3d binary {cand!r} is not an executable file")
+    return cand
+
+
+def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def discover_library(binary: str) -> pathlib.Path | None:
+    """The finish library a local `render tiles` would use (project gooey-3d.json), if any."""
+    p = run([binary, "render", "materials", "--json"])
+    if p.returncode != 0:
+        return None
+    path = json.loads(p.stdout).get("library")
+    return pathlib.Path(path) if path else None
+
+
+def tile_key(tile: dict, library_sha: str | None) -> str:
+    """Everything that changes a tile's pixels (not its id or label)."""
+    k = {f: tile[f] for f in ("input_sha256", "view", "material", "up", "sets")}
+    k["library_sha256"] = library_sha
+    return hashlib.sha256(json.dumps(k, sort_keys=True).encode()).hexdigest()
+
+
+def cached(tiles_dir: pathlib.Path, tile: dict, key: str) -> bool:
+    png, rec = tiles_dir / f"{tile['id']}.png", tiles_dir / f"{tile['id']}.json"
+    if not (png.is_file() and rec.is_file()):
+        return False
+    try:
+        r = json.loads(rec.read_text())
+    except (OSError, ValueError):
+        return False
+    return r.get("remote_key") == key and r.get("input_sha256") == tile["input_sha256"]
+
+
+def gpu_kind(adapter: str) -> str:
+    a = adapter.upper()
+    for k in sorted(GPU_PRICE, key=len, reverse=True):
+        if k in a:
+            return k
+    return adapter
+
+
+def is_nvidia(adapter: str) -> bool:
+    return any(k in adapter.upper() for k in ("NVIDIA", "TESLA"))
+
+
+def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    ap = argparse.ArgumentParser(
+        prog="remote-render", allow_abbrev=False,
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("mode", choices=["job", "sheet"])
+    ap.add_argument("--out", required=True, type=pathlib.Path, help="sheet PNG to write")
+    ap.add_argument("--tiles", type=pathlib.Path, help="tile directory (default: OUT_DIR/tiles)")
+    ap.add_argument("--gooey-3d", dest="binary", help="local gooey-3d (plan/compose only)")
+    ap.add_argument("--library", type=pathlib.Path,
+                    help="finish library to ship (default: the project's, if any)")
+    ap.add_argument("--allow-failed", action="store_true", help="exit 0 even if shards failed")
+    ap.add_argument("--force", action="store_true", help="re-render tiles already on disk")
+    ap.add_argument("--shard-size", type=int, default=0,
+                    help="max tiles per shard (default 0: all tiles of one STL)")
+    ap.add_argument("--app", default=APP, help=f"Modal app name (default {APP})")
+    ap.add_argument("--dry-run", action="store_true", help="list shards, call nothing")
+    ap.add_argument("--json", action="store_true", help="print a summary as JSON on stdout")
+    args, rest = ap.parse_known_args(argv)
+    if args.mode == "job":
+        if len(rest) != 1 or rest[0].startswith("-"):
+            ap.error("job mode takes one JOB.json and no render plan flags")
+    elif not rest:
+        ap.error("sheet mode needs STLs (and any render plan flags)")
+    return args, rest
+
+
+def main(argv: list[str]) -> int:
+    args, rest = parse_args(argv)
+    t0 = time.time()
+    binary = find_binary(args.binary)
+    out = args.out.resolve()
+    tiles_dir = (args.tiles or out.parent / "tiles").resolve()
+    tiles_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.mode == "sheet":
+        job_path = out.parent / "job.json"
+        cmd = [binary, "render", "plan", *rest, "--out", str(job_path)]
+        if args.library:
+            cmd += ["--library", str(args.library)]
+        p = run(cmd)
+        if p.returncode != 0:
+            fail(f"render plan failed:\n{p.stderr.strip()}")
+        log(p.stderr.strip())
+    else:
+        job_path = pathlib.Path(rest[0]).resolve()
+    try:
+        job = json.loads(job_path.read_text())
+    except (OSError, ValueError) as e:
+        fail(f"{job_path}: {e}")
+    if job.get("schema") != "gooey-3d-job/v1":
+        fail(f"{job_path}: not a gooey-3d-job/v1 file")
+    base = job_path.parent
+
+    lib_path = args.library or discover_library(binary)
+    library = lib_path.read_bytes() if lib_path else None
+    lib_sha = hashlib.sha256(library).hexdigest() if library else None
+
+    # Plan the shards: uncached tiles grouped by input.
+    keys = {t["id"]: tile_key(t, lib_sha) for t in job["tiles"]}
+    todo: dict[str, list[dict]] = {}
+    n_cached = 0
+    for t in job["tiles"]:
+        if not args.force and cached(tiles_dir, t, keys[t["id"]]):
+            n_cached += 1
+        else:
+            todo.setdefault(t["input"], []).append(t)
+    shards: list[dict] = []
+    failed: dict[str, str] = {}  # shard name -> error
+    for inp, tiles in todo.items():
+        size = args.shard_size if args.shard_size > 0 else len(tiles)
+        chunks = [tiles[i:i + size] for i in range(0, len(tiles), size)]
+        for k, chunk in enumerate(chunks):
+            name = inp if len(chunks) == 1 else f"{inp}#{k + 1}"
+            shards.append({"name": name, "input": inp, "tiles": chunk})
+        path = base / inp
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            for s in shards[-len(chunks):]:
+                failed[s["name"]] = str(e)
+            continue
+        got = hashlib.sha256(data).hexdigest()
+        if got != tiles[0]["input_sha256"]:
+            for s in shards[-len(chunks):]:
+                failed[s["name"]] = (f"{path} changed since the job was planned "
+                                     f"(sha256 {got}, job says {tiles[0]['input_sha256']}); re-plan")
+            continue
+        for s in shards[-len(chunks):]:
+            s["stl"] = data
+    send = [s for s in shards if s["name"] not in failed]
+    n_todo = sum(len(s["tiles"]) for s in shards)
+    log(f"{len(job['tiles'])} tiles: {n_cached} cached, {n_todo} to render in {len(shards)} shards"
+        + (f" ({len(failed)} failed before sending)" if failed else ""))
+    for name, err in failed.items():
+        log(f"  FAILED {name}: {err}")
+    if args.dry_run:
+        for s in shards:
+            log(f"  {s['name']}: {len(s['tiles'])} tiles")
+        return 0
+
+    # A tile about to render has no valid output yet: clear stale files so a failed shard
+    # shows blanks rather than old pictures.
+    for s in shards:
+        for t in s["tiles"]:
+            for ext in ("png", "json"):
+                (tiles_dir / f"{t['id']}.{ext}").unlink(missing_ok=True)
+
+    # Fan out.
+    results: dict[str, dict] = {}
+    if send:
+        import modal
+
+        try:
+            fn = modal.Function.from_name(args.app, FUNCTION)
+            fn.hydrate()
+        except Exception as e:  # not deployed, no token, ...
+            fail(f"Modal function {args.app}/{FUNCTION}: {type(e).__name__}: {e}\n"
+                 "  deploy it with `modal deploy modal/gooey_render.py`; authenticate with "
+                 "`modal token new` or MODAL_TOKEN_ID / MODAL_TOKEN_SECRET")
+        layout = job["layout"]
+        calls = [({s["input"]: s["stl"]}, {"schema": job["schema"], "layout": layout,
+                                           "tiles": s["tiles"]}, library, s["name"])
+                 for s in send]
+        t_fan = time.time()
+        unattributed: list[str] = []
+        broke = ""
+        done = 0
+        try:
+            stream = fn.starmap(calls, order_outputs=False, return_exceptions=True)
+            for r in stream:
+                done += 1
+                if isinstance(r, BaseException):
+                    msg = f"{type(r).__name__}: {r}"
+                    name = next((s["name"] for s in send
+                                 if f"[shard {s['name']}] " in str(r) and s["name"] not in failed), None)
+                    if name:
+                        failed[name] = msg
+                        log(f"[{done}/{len(send)}] FAILED {name}: {msg.splitlines()[0][:300]}")
+                    else:
+                        unattributed.append(msg)
+                        log(f"[{done}/{len(send)}] FAILED (shard unknown): {msg.splitlines()[0][:300]}")
+                    continue
+                if r.get("error"):
+                    failed[r["shard"]] = r["error"]
+                    log(f"[{done}/{len(send)}] FAILED {r['shard']}: {r['error'].splitlines()[0][:300]}")
+                    continue
+                # Every record names its tile, so a result identifies its shard.
+                ids = set(r["records"])
+                s = next(s for s in send if ids <= {t["id"] for t in s["tiles"]})
+                bad = [a for a in {rec["adapter"] for rec in r["records"].values()} if not is_nvidia(a)]
+                if bad:
+                    failed[s["name"]] = f"non-NVIDIA adapter {bad}"
+                    continue
+                for tid, png in r["pngs"].items():
+                    rec = dict(r["records"][tid])
+                    rec["path"] = str(tiles_dir / f"{tid}.png")
+                    rec["remote_key"] = keys[tid]
+                    rec["remote_task"] = r["task_id"]
+                    (tiles_dir / f"{tid}.png").write_bytes(png)
+                    (tiles_dir / f"{tid}.json").write_text(json.dumps(rec, indent=2) + "\n")
+                results[s["name"]] = r
+                log(f"[{done}/{len(send)}] {s['name']}: {len(r['pngs'])} tiles on {r['adapter']} "
+                    f"in {r['timings']['render_s']:.1f}s")
+        except Exception as e:  # the call itself broke (network, auth): keep what arrived
+            broke = f"{type(e).__name__}: {e}"
+            log(f"fan-out stopped after {done} of {len(send)} results: {type(e).__name__}: {e}")
+        fan_s = time.time() - t_fan
+        for s in send:
+            if s["name"] not in results and s["name"] not in failed:
+                failed[s["name"]] = (unattributed.pop(0) if unattributed
+                                      else broke or "no result")
+    else:
+        t_fan, fan_s = time.time(), 0.0
+
+    # Compose locally (no GPU).
+    p = run([binary, "render", "compose", str(job_path), "--tiles", str(tiles_dir),
+             "--out", str(out), "--allow-missing", "--json"])
+    if p.returncode != 0:
+        fail(f"render compose failed:\n{p.stderr.strip()}")
+    composed = json.loads(p.stdout)["outputs"][0]
+
+    # Containers, GPUs and an estimated GPU bill: each container from its start (or the
+    # fan-out's, if later) to its last result, plus its idle scale-down window. Image
+    # loading before the container imports the module isn't seen here.
+    containers: dict[str, dict] = {}
+    for r in results.values():
+        tm = r["timings"]
+        c = containers.setdefault(r["task_id"], {"start": tm["container_start"], "end": tm["end"],
+                                                 "gpu": gpu_kind(r["adapter"]),
+                                                 "idle": tm["scaledown_s"], "shards": 0})
+        c["start"] = min(c["start"], tm["container_start"])
+        c["end"] = max(c["end"], tm["end"])
+        c["shards"] += 1
+    cost = 0.0
+    for c in containers.values():
+        # A container still warm from an earlier run was billed then; count from now.
+        c["billed_s"] = round(c["end"] - max(c["start"], t_fan) + c["idle"], 1)
+        cost += c["billed_s"] / 3600 * GPU_PRICE.get(c["gpu"], 0.0)
+    gpus: dict[str, int] = {}
+    for c in containers.values():
+        gpus[c["gpu"]] = gpus.get(c["gpu"], 0) + 1
+    adapters = sorted({rec["adapter"] for r in results.values() for rec in r["records"].values()})
+    n_rendered = sum(len(r["pngs"]) for r in results.values())
+    wall = time.time() - t0
+    failed_tiles = sorted(t["id"] for s in shards if s["name"] in failed for t in s["tiles"])
+
+    summary = {
+        "sheet": str(out),
+        "index": composed["index"],
+        "tiles_dir": str(tiles_dir),
+        "job": str(job_path),
+        "tiles": len(job["tiles"]),
+        "cached": n_cached,
+        "rendered": n_rendered,
+        "missing": composed["missing"],
+        "shards": len(shards),
+        "failed_shards": [{"shard": k, "error": v} for k, v in failed.items()],
+        "containers": len(containers),
+        "gpus": gpus,
+        "adapters": adapters,
+        "fan_out_s": round(fan_s, 1),
+        "wall_s": round(wall, 1),
+        "est_gpu_cost_usd": round(cost, 4),
+        "billed_gpu_s": round(sum(c["billed_s"] for c in containers.values()), 1),
+        # Per container: GPU, shards served, start and last result in seconds after the
+        # fan-out began (container clocks), billed seconds.
+        "container_detail": [
+            {"task": k, "gpu": c["gpu"], "shards": c["shards"],
+             "start_s": round(c["start"] - t_fan, 1), "end_s": round(c["end"] - t_fan, 1),
+             "billed_s": c["billed_s"]}
+            for k, c in sorted(containers.items(), key=lambda kv: kv[1]["start"])],
+    }
+    log(f"wrote {out} ({composed['width']}x{composed['height']}) and {composed['index']}")
+    log(f"{n_rendered} rendered, {n_cached} cached, {len(composed['missing'])} missing; "
+        f"{len(shards)} shards on {len(containers)} containers {gpus}; fan-out {fan_s:.1f}s, "
+        f"wall {wall:.1f}s; est. GPU cost ${cost:.4f} ({summary['billed_gpu_s']}s billed)")
+    if failed:
+        log(f"{len(failed)} shard(s) failed ({len(failed_tiles)} tiles blank on the sheet):")
+        for k, v in failed.items():
+            log(f"  {k}: {v.splitlines()[0][:500]}")
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    if failed and not args.allow_failed:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)
