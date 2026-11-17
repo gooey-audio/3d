@@ -1,7 +1,7 @@
 //! gooey-3d: casting moulds and path-traced renders from one CLI.
 //!
 //!   gooey-3d mould build|check ...    casting moulds (castkit-core)
-//!   gooey-3d render stl|sheet|scene|sync|check|info|bounds|materials ...
+//!   gooey-3d render stl|sheet|plan|tiles|compose|scene|sync|check|info|bounds|materials ...
 //!   gooey-3d --version
 
 mod flags;
