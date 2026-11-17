@@ -67,6 +67,14 @@ up, sets, label}`. `tiles` refuses to render if an STL changed since the plan.
 `compose` draws missing tiles as labelled blanks, lists them, and exits 1 unless
 `--allow-missing`; re-render just those with `tiles --only`.
 
+**No usable local GPU, or hundreds of tiles?** `scripts/remote-render` (in
+gooey-audio/3d) renders a job's tiles on Modal GPUs and composes the sheet locally:
+`scripts/remote-render sheet parts/*.stl --orbit 24 --out .context/remote/sheet.png`
+(any `plan` flag passes through; `job JOB.json` renders an existing job). It needs a
+Modal token and the deployed app; see `modal/README.md`. Failed shards are listed
+and blank on the sheet (exit 1). Remote PNGs are not byte-identical to local ones:
+never commit them as renders.
+
 ## 3. Materials
 
 A material spec is one of:

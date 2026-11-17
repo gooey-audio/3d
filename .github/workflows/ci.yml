@@ -22,6 +22,8 @@ jobs:
       # GPU tests skip themselves without an adapter; `gpu::` is skipped outright because
       # hosted runners have no GPU (or only a paravirtual one).
       - run: cargo test --release --workspace -- --skip 'gpu::'
+      - name: Modal shim and remote-render client compile (syntax only; no Modal here)
+        run: python3 -m py_compile modal/gooey_render.py scripts/remote-render
       - run: cargo build --release -p gooey-3d
       - name: mould build --check on every fixture
         run: |

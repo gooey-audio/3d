@@ -151,6 +151,8 @@ gooey-3d render compose job.json --tiles tiles/ --out sheet.png          # no GP
   `id`). A tile without a PNG is drawn as a labelled blank cell and listed in the index
   (`missing`), on stderr and in `--json`; the exit status is then 1 unless
   `--allow-missing`. A tile whose record names a different `input_sha256` is an error.
+- **Remote:** `scripts/remote-render` runs the tiles on Modal GPUs (one shard per
+  STL) and composes locally; see [`modal/README.md`](modal/README.md).
 
 ### Scene flags
 
