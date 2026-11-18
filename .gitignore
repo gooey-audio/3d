@@ -1,6 +1,6 @@
-/target
+target/
 .context/
 # castkit's own STLs are reproducible from the spec; only report.json is committed.
-fixtures/*/out/*.stl
+engine/fixtures/*/out/*.stl
 node_modules/
 __pycache__/

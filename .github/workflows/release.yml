@@ -19,6 +19,9 @@ jobs:
           - { os: macos-15, target: x86_64-apple-darwin, bun: bun-darwin-x64, env: "CMAKE_OSX_ARCHITECTURES=x86_64" }
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, bun: bun-linux-x64, smoke: true }
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: engine
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -37,7 +40,7 @@ jobs:
         run: |
           name=gooey-3d-${GITHUB_REF_NAME}-${{ matrix.target }}
           mkdir "$name"
-          cp target/${{ matrix.target }}/release/gooey-3d README.md LICENSE-MIT LICENSE-APACHE "$name/"
+          cp target/${{ matrix.target }}/release/gooey-3d README.md ../LICENSE-MIT ../LICENSE-APACHE "$name/"
           bun=${{ matrix.bun }}
           cp "cad-worker/dist/gooey-cad-worker-${bun#bun-}" "$name/gooey-cad-worker"
           {
@@ -56,10 +59,13 @@ jobs:
           env -i HOME="$HOME" PATH=/usr/bin:/bin "$dir/gooey-3d" cad check fixtures/cad/brace.js
       - uses: softprops/action-gh-release@v2
         with:
-          files: gooey-3d-*.tar.gz*
+          files: engine/gooey-3d-*.tar.gz*
 
   wasm:
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: engine
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -80,4 +86,4 @@ jobs:
           cd ../.. && shasum -a 256 castkit-wasm-*.tgz > castkit-wasm-${GITHUB_REF_NAME}.tgz.sha256
       - uses: softprops/action-gh-release@v2
         with:
-          files: castkit-wasm-*.tgz*
+          files: engine/castkit-wasm-*.tgz*
