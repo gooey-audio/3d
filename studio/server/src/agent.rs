@@ -286,6 +286,13 @@ fn tools() -> Value {
             json!({"type": "object", "properties": {"patch": {"type": "object"}}, "required": ["patch"]})
         ),
         f("list_finishes", "The finish library: names and labels.", none),
+        f(
+            "render_sheet",
+            "Queue a path-traced contact sheet of the current build in the scene's look (a final render for the user; you cannot see it). `views` are view names or [x,y,z] directions; with neither views nor orbit you get iso, front, side and top. `orbit` is \"N@DEG\": N views evenly spaced around the part (360/N degrees apart), DEG degrees above the horizon; e.g. a 12-view turntable is \"12@20\". Returns the job id and tile count; the user sees it under Renders.",
+            json!({"type": "object", "properties": {
+                "views": {"type": "array", "items": {}}, "orbit": {"type": "string"},
+                "spp": {"type": "integer", "description": "samples per pixel, default 256"}}})
+        ),
     ])
 }
 
@@ -373,6 +380,24 @@ async fn tool(app: &App, part: &str, name: &str, args: &Value) -> Result<Value, 
                 .map(|(n, e)| json!({"name": n, "label": e.label}))
                 .collect::<Vec<_>>()
         )),
+        "render_sheet" => {
+            let views = args.get("views").and_then(Value::as_array).cloned().unwrap_or_default();
+            let orbit = s("orbit").map(str::to_owned);
+            let spp = args.get("spp").and_then(Value::as_u64).map(|x| x as u32);
+            let job = crate::renders::part_sheet(app, part, views, orbit, spp)?;
+            let crate::renders::Request::Sheet(r) = &job.request else {
+                unreachable!()
+            };
+            let orbit_n = r
+                .orbit
+                .as_deref()
+                .and_then(|o| gooey_render::job::parse_orbit(o).ok())
+                .map_or(0, |(n, _)| n as usize);
+            Ok(
+                json!({"ok": true, "job": job.id, "status": job.status, "views": r.views,
+                      "orbit": r.orbit, "tiles": (r.views.len() + orbit_n).max(1)}),
+            )
+        }
         other => Err(AppError(format!("unknown tool `{other}`"))),
     }
 }

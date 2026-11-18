@@ -4,6 +4,7 @@ import { Editor } from "./Editor";
 import { Chat, applyAgentEvent, fromStored, type TurnView } from "./Chat";
 import { Look, Params } from "./Panels";
 import { Viewer } from "./viewer";
+import { Renders } from "./Renders";
 
 const AUTOSAVE_MS = 400;
 
@@ -11,7 +12,12 @@ type Tab = "script" | "params" | "look";
 
 export function App() {
   const [info, setInfo] = useState<Info | null>(null);
-  const [parts, setParts] = useState<{ name: string }[]>([]);
+  const [parts, setParts] = useState<{ name: string; build: { ok: boolean; rev: number } | null }[]>([]);
+  const [mode, setMode] = useState<"editor" | "renders">(() =>
+    new URLSearchParams(location.search).get("mode") === "renders" ? "renders" : "editor",
+  );
+  const [renderEvent, setRenderEvent] = useState<any>(null);
+  const [renderJob, setRenderJob] = useState<string | null>(null);
   const [finishes, setFinishes] = useState<Finish[]>([]);
   const [current, setCurrent] = useState<string | null>(() => new URLSearchParams(location.search).get("part"));
   const [part, setPart] = useState<PartData | null>(null);
@@ -91,7 +97,7 @@ export function App() {
 
   useEffect(() => {
     if (!current) return;
-    history.replaceState(null, "", `?part=${encodeURIComponent(current)}`);
+    history.replaceState(null, "", `?part=${encodeURIComponent(current)}${mode === "renders" ? "&mode=renders" : ""}`);
     setPart(null);
     setBuild(null);
     setLastInfo(null);
@@ -128,6 +134,11 @@ export function App() {
       subscribe(async (e) => {
         const name = currentRef.current;
         if (e.type === "parts") loadParts();
+        if (e.type === "render" || e.type === "renders" || e.type === "uploads") {
+          setRenderEvent(e);
+          return;
+        }
+        if (e.type === "build") setParts((ps) => ps.map((p) => (p.name === e.part ? { ...p, build: { ok: e.ok, rev: e.rev } } : p)));
         if (e.type === "resync") {
           loadParts();
           if (name) loadPart(name);
@@ -210,9 +221,36 @@ export function App() {
             </option>
           ))}
         </select>
+        <nav className="modes">
+          <button className={mode === "editor" ? "on" : ""} onClick={() => setMode("editor")}>
+            Editor
+          </button>
+          <button className={mode === "renders" ? "on" : ""} onClick={() => setMode("renders")}>
+            Renders
+          </button>
+        </nav>
         <button onClick={newPart}>New part</button>
         <Status building={building} build={build} />
         <span className="spacer" />
+        {current && (
+          <button
+            title="Path-trace a contact sheet of this part in its look (iso, front, side, top)"
+            disabled={!part?.good_rev && !build?.ok}
+            onClick={async () => {
+              try {
+                const res = await fetch(`/api/parts/${encodeURIComponent(current)}/render`, { method: "POST" });
+                const j = await res.json();
+                if (!res.ok) throw new Error(j.error);
+                setRenderJob(j.id);
+                setMode("renders");
+              } catch (e: any) {
+                setBanner(e.message);
+              }
+            }}
+          >
+            Render
+          </button>
+        )}
         {current && (
           <a className="button" href={api.stepUrl(current)} download>
             STEP
@@ -245,7 +283,10 @@ export function App() {
           </button>
         </div>
       )}
-      <main>
+      {mode === "renders" && (
+        <Renders finishes={finishes} parts={parts} event={renderEvent} select={renderJob} onSelect={setRenderJob} />
+      )}
+      <main className={mode === "renders" ? "hidden" : ""}>
         <section className="left">
           <nav className="tabs">
             {(["script", "params", "look"] as Tab[]).map((t) => (

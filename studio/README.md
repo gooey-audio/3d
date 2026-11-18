@@ -14,6 +14,9 @@ A local web app on the gooey-3d engine for parametric parts written as
 - **Change the look**: material, environment, background, exposure and camera live in
   `<part>.studio.json`. You or the agent change them, and they map one-to-one onto
   `gooey-3d render` flags.
+- **Render**: the Renders page turns uploaded STLs, or parts, into path-traced contact
+  sheets, from any views, orbits and finishes. Click a tile for a 1600 px still. The
+  editor's "Render" button makes a sheet of the current part in its look.
 
 ```sh
 # once: the CAD worker and the web UI
@@ -73,11 +76,47 @@ as context, plus these tools:
 | `get_report` | Returns the last build's validation report. |
 | `get_scene` / `update_scene` | Reads the scene, or applies a JSON merge patch to it. |
 | `list_finishes` | Lists the finishes in the library. |
+| `render_sheet` | Queues a final render of the part (views, orbit, spp). |
 
 Script tools wait for their build and return the result: the size, genus and
 printability, or the error kind, message and line with the surrounding source. The model
 can then fix its own mistakes. The editor is read-only during a turn. "Revert" restores
 the checkpoint.
+
+## Renders
+
+Renders run through the engine's CLI, so they match `gooey-3d render` byte for byte.
+`gooey-3d` is found as `$GOOEY_3D`, else next to `gooey-studio`, else in this checkout's
+`engine/target/{release,debug}`, else on PATH. One job runs at a time.
+
+- **Uploads.** `POST /api/uploads` takes multipart `file` fields of up to 512 MB. Each
+  STL is parsed, then stored by SHA-256 in `.studio/uploads/`.
+- **Jobs.** `POST /api/renders` takes either of these:
+
+  ```json
+  { "kind": "sheet", "inputs": [{"upload": "<sha256>"}, {"part": "brace"}],
+    "views": ["iso", "top", [1, 0.5, 0]], "orbit": "12@20",
+    "materials": ["wood/walnut", "#3d5a80", {"finish": "aluminium/brushed", "roughness": 0.2}],
+    "tile": 400, "spp": 256, "background": "#f2f2f0",
+    "environment": {"type": "studio", "intensity": 1}, "exposure": 1, "fov": 25,
+    "label_from": "name", "remote": false }
+  { "kind": "still", "input": {"upload": "<sha256>"}, "view": "iso", "material": "wood/oak",
+    "width": 1600, "aspect": 1.5, "spp": 1024 }
+  ```
+
+  A sheet has at most 400 tiles (inputs × views × materials).
+- **Job directory.** Each job lives in `.studio/renders/<id>/`. Inputs are copied there
+  when the job is queued, so later edits don't change it. Progress streams as SSE
+  `render` events, and the job's `sheet.json` index maps tiles to their rectangles.
+- **Modal.** `"remote": true` renders the tiles on Modal through
+  `engine/scripts/remote-render`, which needs `uv` and a Modal token (see
+  `engine/modal/README.md`).
+
+```sh
+curl -F file=@a.stl -F file=@b.stl localhost:7878/api/uploads
+curl -H 'content-type: application/json' localhost:7878/api/renders \
+     -d '{"kind":"sheet","inputs":[{"upload":"<sha256>"}],"orbit":"8","materials":["wood/oak"]}'
+```
 
 ## Security
 

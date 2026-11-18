@@ -16,6 +16,14 @@
 //!   POST  /api/parts/{p}/revert/{turn}    restore the script + scene from before a turn
 //!   GET   /api/library                    finishes, resolved
 //!   GET   /api/asset?path=REL             a file in the project (HDRIs)
+//!   GET   /api/uploads                    uploaded STLs; POST multipart `file` fields
+//!   DELETE /api/uploads/{sha}
+//!   GET   /api/renders                    render jobs, newest first
+//!   POST  /api/renders                    {kind: sheet|still, ...} (renders.rs)
+//!   POST  /api/parts/{p}/render           a sheet of the part in its scene's look
+//!   GET   /api/renders/{id}               job with its sheet index; DELETE removes it
+//!   POST  /api/renders/{id}/cancel
+//!   GET   /api/renders/{id}/image         the PNG
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -34,7 +42,7 @@ use serde_json::{Value, json};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::{App, AppError, agent, sha256_hex, valid_part};
+use crate::{App, AppError, agent, renders, sha256_hex, valid_part};
 
 pub struct ApiError(StatusCode, String);
 
@@ -87,6 +95,18 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/parts/{part}/revert/{turn}", post(revert))
         .route("/api/library", get(library))
         .route("/api/asset", get(asset))
+        .route(
+            "/api/uploads",
+            get(uploads)
+                .post(upload)
+                .layer(axum::extract::DefaultBodyLimit::max(512 << 20)),
+        )
+        .route("/api/uploads/{sha}", axum::routing::delete(delete_upload))
+        .route("/api/renders", get(list_renders).post(submit_render))
+        .route("/api/parts/{part}/render", post(render_part))
+        .route("/api/renders/{id}", get(get_render).delete(delete_render))
+        .route("/api/renders/{id}/cancel", post(cancel_render))
+        .route("/api/renders/{id}/image", get(render_image))
         .fallback(crate::assets::serve)
         .with_state(app)
 }
@@ -363,4 +383,85 @@ pub async fn local_only(req: Request, next: Next, port: u16) -> Response {
     } else {
         (StatusCode::FORBIDDEN, "gooey-studio only serves pages on this machine").into_response()
     }
+}
+
+// --- uploads and renders --------------------------------------------------------
+
+async fn uploads(State(app): S) -> Json<Value> {
+    Json(json!(renders::list_uploads(&app)))
+}
+
+async fn upload(State(app): S, mut form: axum::extract::Multipart) -> R<Json<Value>> {
+    let mut saved = vec![];
+    while let Some(field) = form
+        .next_field()
+        .await
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        let name = field.file_name().unwrap_or("part.stl").to_owned();
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))?;
+        saved.push(renders::save_upload(&app, &name, &bytes)?);
+    }
+    if saved.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "no files"));
+    }
+    app.emit(json!({"type": "uploads"}));
+    Ok(Json(json!(saved)))
+}
+
+async fn delete_upload(State(app): S, Path(sha): Path<String>) -> R<Json<Value>> {
+    renders::delete_upload(&app, &sha)?;
+    app.emit(json!({"type": "uploads"}));
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn list_renders(State(app): S) -> Json<Value> {
+    Json(json!(app.renders.list()))
+}
+
+async fn submit_render(State(app): S, Json(req): Json<renders::Request>) -> R<Json<Value>> {
+    Ok(Json(json!(renders::submit(&app, req)?)))
+}
+
+#[derive(Deserialize, Default)]
+struct PartRender {
+    #[serde(default)]
+    views: Vec<Value>,
+    orbit: Option<String>,
+    spp: Option<u32>,
+}
+
+async fn render_part(State(app): S, Path(part): Path<String>, body: Option<Json<PartRender>>) -> R<Json<Value>> {
+    let b = body.map(|b| b.0).unwrap_or_default();
+    Ok(Json(json!(renders::part_sheet(&app, &part, b.views, b.orbit, b.spp)?)))
+}
+
+async fn get_render(State(app): S, Path(id): Path<String>) -> R<Json<Value>> {
+    let j = app
+        .renders
+        .get(&id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such render"))?;
+    Ok(Json(json!(j)))
+}
+
+async fn cancel_render(State(app): S, Path(id): Path<String>) -> R<Json<Value>> {
+    renders::cancel(&app, &id)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn delete_render(State(app): S, Path(id): Path<String>) -> R<Json<Value>> {
+    renders::delete(&app, &id)?;
+    app.emit(json!({"type": "renders"}));
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn render_image(State(app): S, Path(id): Path<String>) -> R<Response> {
+    let p = renders::image_path(&app, &id).ok_or_else(|| err(StatusCode::NOT_FOUND, "no image (yet)"))?;
+    let bytes = tokio::fs::read(&p)
+        .await
+        .map_err(|e| err(StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(([(header::CONTENT_TYPE, "image/png")], bytes).into_response())
 }
