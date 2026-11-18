@@ -7,7 +7,7 @@ use std::time::Instant;
 use crate::flags::{Flags, parse};
 use gooey_render::project::{self, LazyGpu, Project, Written};
 use gooey_render::scene::{self, SceneFile};
-use gooey_render::{adhoc, frame, manifest, post, sheet, stl};
+use gooey_render::{adhoc, frame, job, manifest, post, sheet, stl};
 use serde_json::{Map, Value, json};
 
 pub const USAGE: &str = "\
@@ -19,8 +19,18 @@ usage:
   gooey-3d render sheet A.stl [B.stl ...] --out sheet.png [options]
       Contact sheet: one tile per STL x --view x --material, plus sheet.json (index).
       --view V            repeatable (default iso)
+      --orbit N[@DEG]     N views turning around +Y, DEG above the horizon (default 20)
       --material SPEC     repeatable (default plain grey)
+      --label-from name|id  label cells with names (default) or tile ids
       --cols N  --tile PX (default 400)  --gap PX  --no-labels  --up z|y|x
+  gooey-3d render plan A.stl [B.stl ...] --out job.json [sheet options]
+      The same sheet as a job file (gooey-3d-job/v1) of independent tiles; no GPU.
+  gooey-3d render tiles job.json --out-dir DIR [--only ID,...]
+      Render a job's tiles (or some of them): DIR/<id>.png and DIR/<id>.json. Fails
+      before rendering if an STL no longer matches the job's input_sha256.
+  gooey-3d render compose job.json --tiles DIR --out sheet.png [--allow-missing]
+      Composite rendered tiles into the sheet plus sheet.json; no GPU. Missing tiles are
+      drawn blank and listed; exit 1 unless --allow-missing.
   gooey-3d render scene SCENE.json|MANIFEST.json [--shot NAME] [--out PATH] [options]
       Render a scene file's shots (or a bare manifest). Without --out, shots go to the
       scene's committed `output`; overrides then need --out.
@@ -33,7 +43,7 @@ usage:
 material SPEC: a library finish (`wood/walnut`), a colour (`#c0a080`), or JSON
   (`{\"finish\":\"paint/mdf-satin\",\"color\":\"#334455\"}`, `{\"color\":\"#ccc\",\"metalness\":1,\"roughness\":0.3}`)
 
-scene options (stl, sheet, scene, info, bounds):
+scene options (stl, sheet, plan, scene, info, bounds):
   --spp N  --width N  --aspect A  --fov DEG  --explode F  --exposure E
   --view iso|front|side|top|rear|rear-iso|X,Y,Z
   --env studio|room|FILE.hdr|ENV.json|'{...}'   --background transparent|#rrggbb
@@ -45,7 +55,7 @@ common options:
   --json              print a machine-readable result on stdout
   --quiet             less progress on stderr
 
-Exit status: 0 ok, 1 stale renders (check), 2 error.";
+Exit status: 0 ok, 1 stale renders (check) or missing tiles (compose), 2 error.";
 
 const SCENE_VALUES: &[&str] = &[
     "--spp",
@@ -79,6 +89,9 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         }
         Some("stl") => stl_cmd(rest),
         Some("sheet") => sheet_cmd(rest),
+        Some("plan") => plan_cmd(rest),
+        Some("tiles") => tiles_cmd(rest),
+        Some("compose") => compose_cmd(rest),
         Some("scene") => scene_cmd(rest),
         Some("sync") => sync_cmd(rest),
         Some("check") => check_cmd(rest),
@@ -310,19 +323,78 @@ fn short_names(inputs: &[adhoc::StlInput]) -> Vec<String> {
         .collect()
 }
 
-fn sheet_cmd(args: &[String]) -> Result<ExitCode, String> {
-    let values = with(
-        &["--out", "--material", "--up", "--cols", "--tile", "--gap"],
-        &[SCENE_VALUES, COMMON_VALUES],
-    );
-    let f = parse(args, &values)?;
-    let switches = with(&["--no-labels"], &[COMMON_SWITCHES]);
-    f.reject_unknown(&switches, &values)?;
-    if f.positional.is_empty() {
-        return Err(format!("render sheet needs at least one STL\n{USAGE}"));
+const SHEET_VALUES: &[&str] = &[
+    "--material",
+    "--up",
+    "--cols",
+    "--tile",
+    "--gap",
+    "--orbit",
+    "--label-from",
+];
+const SHEET_SWITCHES: &[&str] = &["--no-labels"];
+
+/// One camera view of a sheet: its label piece, id fragment, scene value and index entry.
+struct ViewSpec {
+    label: String,
+    id: String,
+    view: scene::View,
+    meta: Value,
+}
+
+/// A planned tile, with the STL path as given and what `render sheet` indexes for it.
+struct Planned {
+    tile: job::JobTile,
+    path: PathBuf,
+    meta: Value,
+}
+
+struct Plan {
+    layout: sheet::Layout,
+    tiles: Vec<Planned>,
+}
+
+fn sheet_views(f: &Flags) -> Result<Vec<ViewSpec>, String> {
+    let mut views = Vec::new();
+    for raw in f.all("--view") {
+        views.push(ViewSpec {
+            label: raw.to_owned(),
+            id: job::id_fragment(raw),
+            view: serde_json::from_str(&view_json(raw)).map_err(|e| format!("--view {raw}: {e}"))?,
+            meta: json!(raw),
+        });
     }
-    let out = PathBuf::from(f.value("--out").ok_or("render sheet needs --out PATH.png")?);
-    let quiet = f.has("--quiet");
+    if let Some(raw) = f.value("--orbit") {
+        let (n, elev) = job::parse_orbit(raw)?;
+        for (k, d) in job::orbit(n, elev).into_iter().enumerate() {
+            let az = 360.0 * k as f64 / n as f64;
+            let (label, id) = if az.fract() == 0.0 {
+                (format!("{az}°"), format!("az{:03}", az as u32))
+            } else {
+                (format!("{az:.1}°"), format!("az{az:05.1}"))
+            };
+            views.push(ViewSpec {
+                label,
+                id,
+                view: scene::View::Direction(d),
+                meta: json!(d),
+            });
+        }
+    }
+    if views.is_empty() {
+        views.push(ViewSpec {
+            label: "iso".into(),
+            id: "iso".into(),
+            view: scene::View::Named("iso".into()),
+            meta: json!("iso"),
+        });
+    }
+    Ok(views)
+}
+
+/// The tiles and layout of a contact sheet (`render sheet` / `render plan` flags): one tile
+/// per STL x view x material. No GPU, no project needed.
+fn plan_sheet(f: &Flags) -> Result<Plan, String> {
     let num = |k: &str, d: u32| -> Result<u32, String> {
         f.value(k)
             .map(|v| v.parse().map_err(|e| format!("{k} {v}: {e}")))
@@ -331,21 +403,19 @@ fn sheet_cmd(args: &[String]) -> Result<ExitCode, String> {
     };
     let tile = num("--tile", 400)?.clamp(32, 4096);
     let gap = num("--gap", (tile / 40).max(4))?;
-    let p = load_project(&f)?;
     let up = f.value("--up").unwrap_or("z");
-    let views: Vec<&str> = match f.all("--view") {
-        v if v.is_empty() => vec!["iso"],
-        v => v,
+    let label_ids = match f.value("--label-from").unwrap_or("name") {
+        "name" => false,
+        "id" => true,
+        other => return Err(format!("--label-from {other}: want id or name")),
     };
+    let views = sheet_views(f)?;
     let mats: Vec<Option<&str>> = match f.all("--material") {
         v if v.is_empty() => vec![None],
         v => v.into_iter().map(Some).collect(),
     };
     // Scene flags other than --view apply to every tile; each tile sets its own view.
-    let mut sets: Vec<(String, String)> = scene_sets(&f)?
-        .into_iter()
-        .filter(|(k, _)| k != "camera.view")
-        .collect();
+    let mut sets: Vec<(String, String)> = scene_sets(f)?.into_iter().filter(|(k, _)| k != "camera.view").collect();
     sets.insert(0, ("aspect".into(), "1".into()));
     sets.insert(0, ("width".into(), tile.to_string()));
     sets.insert(0, ("spp".into(), "128".into()));
@@ -358,46 +428,57 @@ fn sheet_cmd(args: &[String]) -> Result<ExitCode, String> {
     };
     let inputs: Vec<adhoc::StlInput> = f.positional.iter().map(|a| adhoc::StlInput::parse(a)).collect();
     let names = short_names(&inputs);
-    let mut tiles = Vec::new();
+    let mut tiles: Vec<Planned> = Vec::new();
     for (input, name) in inputs.iter().zip(&names) {
         for view in &views {
             for mat in &mats {
                 let spec = input.material.as_deref().or(*mat);
-                let mut tile_sets = sets.clone();
-                tile_sets.push(("camera.view".into(), view_json(view)));
-                let r = resolve_adhoc(
-                    &p,
-                    std::slice::from_ref(input),
-                    spec,
-                    up,
-                    adhoc_scene(Map::new()),
-                    &tile_sets,
-                    "sheet",
-                )?;
                 let mut label = vec![name.clone()];
+                let mut id = vec![job::id_fragment(name)];
                 if views.len() > 1 {
-                    label.push(view.to_string());
+                    label.push(view.label.clone());
+                    id.push(view.id.clone());
                 }
                 if let Some(s) = spec.filter(|_| mats.len() > 1 || input.material.is_some()) {
                     label.push(material_label(s));
+                    id.push(job::id_fragment(&material_label(s)));
                 }
-                tiles.push(sheet::Tile {
-                    resolved: r,
-                    label: label.join(" · "),
+                let base = id.join("-");
+                let (mut id, mut k) = (base.clone(), 2);
+                while tiles.iter().any(|t| t.tile.id == id) {
+                    id = format!("{base}-{k}");
+                    k += 1;
+                }
+                let label = if label_ids { id.clone() } else { label.join(" · ") };
+                tiles.push(Planned {
+                    tile: job::JobTile {
+                        id,
+                        input: input.path.to_string_lossy().into_owned(),
+                        input_sha256: String::new(),
+                        view: view.view.clone(),
+                        material: spec.map(str::to_owned),
+                        up: up.to_owned(),
+                        sets: sets.clone(),
+                        label,
+                    },
+                    path: input.path.clone(),
                     meta: json!({
                         "input": input.path,
-                        "view": view,
+                        "view": view.meta,
                         "material": spec,
                     }),
                 });
             }
         }
     }
+    let n = tiles.len() as f64;
     let per_input = (views.len() * mats.len()) as u32;
     let cols = match f.value("--cols") {
         Some(_) => num("--cols", 1)?,
+        // A single turntable reads best as a block, not one long row.
+        None if f.value("--orbit").is_some() && inputs.len() == 1 => n.sqrt().ceil() as u32,
         None if per_input > 1 => per_input,
-        None => (tiles.len() as f64).sqrt().ceil() as u32,
+        None => n.sqrt().ceil() as u32,
     };
     let layout = sheet::Layout {
         cols,
@@ -407,45 +488,349 @@ fn sheet_cmd(args: &[String]) -> Result<ExitCode, String> {
         background,
         text: [40, 40, 40],
     };
-    let start = Instant::now();
-    let mut gpu = LazyGpu::default();
-    let (g, _) = gpu.get()?;
-    if !quiet {
-        eprintln!("{} tiles, {tile}px, on {}", tiles.len(), g.adapter);
-    }
-    let s = sheet::render(tiles, &layout, g, &log_fn(quiet))?;
-    post::write_png(&out, &s.rgba, s.width, s.height)?;
+    Ok(Plan { layout, tiles })
+}
+
+/// Resolve one job tile against the STL at `path`.
+fn resolve_tile(p: &Project, path: &Path, t: &job::JobTile) -> Result<scene::Resolved, String> {
+    let input = adhoc::StlInput {
+        path: path.to_owned(),
+        material: None,
+    };
+    let mut sets = t.sets.clone();
+    sets.push(("camera.view".into(), serde_json::to_string(&t.view).unwrap()));
+    resolve_adhoc(
+        p,
+        std::slice::from_ref(&input),
+        t.material.as_deref(),
+        &t.up,
+        adhoc_scene(Map::new()),
+        &sets,
+        "sheet",
+    )
+    .map_err(|e| format!("tile {}: {e}", t.id))
+}
+
+/// Write the `gooey-3d-sheet/v1` index beside `out`; `extra` adds top-level fields.
+fn write_index(
+    out: &Path,
+    s: &sheet::Sheet,
+    l: &sheet::Layout,
+    adapter: Value,
+    extra: Map<String, Value>,
+) -> Result<PathBuf, String> {
     let index_path = out.with_extension("json");
-    let index = json!({
+    let mut index = json!({
         "schema": "gooey-3d-sheet/v1",
         "image": out.file_name().map(|n| n.to_string_lossy().into_owned()),
         "width": s.width,
         "height": s.height,
-        "cols": layout.cols,
-        "tile": tile,
-        "adapter": g.adapter,
+        "cols": l.cols,
+        "tile": l.tile,
+        "adapter": adapter,
         "cells": s.cells,
     });
+    index.as_object_mut().unwrap().extend(extra);
     std::fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap() + "\n")
         .map_err(|e| format!("{}: {e}", index_path.display()))?;
+    Ok(index_path)
+}
+
+fn sheet_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let values = with(&["--out"], &[SHEET_VALUES, SCENE_VALUES, COMMON_VALUES]);
+    let f = parse(args, &values)?;
+    let switches = with(SHEET_SWITCHES, &[COMMON_SWITCHES]);
+    f.reject_unknown(&switches, &values)?;
+    if f.positional.is_empty() {
+        return Err(format!("render sheet needs at least one STL\n{USAGE}"));
+    }
+    let out = PathBuf::from(f.value("--out").ok_or("render sheet needs --out PATH.png")?);
+    let quiet = f.has("--quiet");
+    let p = load_project(&f)?;
+    let plan = plan_sheet(&f)?;
+    let mut tiles = Vec::new();
+    for t in plan.tiles {
+        tiles.push(sheet::Tile {
+            resolved: resolve_tile(&p, &t.path, &t.tile)?,
+            label: t.tile.label,
+            meta: t.meta,
+        });
+    }
+    let layout = plan.layout;
+    let start = Instant::now();
+    let mut gpu = LazyGpu::default();
+    let (g, _) = gpu.get()?;
+    if !quiet {
+        eprintln!("{} tiles, {}px, on {}", tiles.len(), layout.tile, g.adapter);
+    }
+    let s = sheet::render(tiles, &layout, g, &log_fn(quiet))?;
+    post::write_png(&out, &s.rgba, s.width, s.height)?;
+    let index_path = write_index(&out, &s, &layout, json!(g.adapter), Map::new())?;
     let secs = start.elapsed().as_secs_f64();
     eprintln!(
         "wrote {} ({}x{}, {} tiles) in {secs:.1}s",
         out.display(),
         s.width,
         s.height,
-        index["cells"].as_array().map_or(0, Vec::len)
+        s.cells.len()
     );
     if f.has("--json") {
         print_json(&json!({
             "outputs": [{
                 "path": out, "index": index_path, "width": s.width, "height": s.height,
-                "tiles": index["cells"].as_array().map_or(0, Vec::len),
+                "tiles": s.cells.len(),
                 "adapter": g.adapter, "seconds": (secs * 10.0).round() / 10.0,
             }],
         }));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+// ------------------------------------------------------------------- plan / tiles / compose
+
+fn plan_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let values = with(&["--out"], &[SHEET_VALUES, SCENE_VALUES, COMMON_VALUES]);
+    let f = parse(args, &values)?;
+    let switches = with(SHEET_SWITCHES, &[COMMON_SWITCHES]);
+    f.reject_unknown(&switches, &values)?;
+    if f.positional.is_empty() {
+        return Err(format!("render plan needs at least one STL\n{USAGE}"));
+    }
+    let out = PathBuf::from(f.value("--out").ok_or("render plan needs --out JOB.json")?);
+    let p = load_project(&f)?;
+    let plan = plan_sheet(&f)?;
+    let base = job::base_dir(&out)?;
+    let mut tiles = Vec::new();
+    let mut hashes: std::collections::HashMap<PathBuf, String> = Default::default();
+    for t in plan.tiles {
+        // Resolve now (no GPU) so bad materials or views fail here, not on the render host.
+        resolve_tile(&p, &t.path, &t.tile)?;
+        let mut tile = t.tile;
+        if !hashes.contains_key(&t.path) {
+            hashes.insert(t.path.clone(), job::file_sha256(&t.path)?);
+        }
+        tile.input_sha256 = hashes[&t.path].clone();
+        tile.input = job::input_ref(&t.path, &base)?;
+        tiles.push(tile);
+    }
+    let job = job::Job::new(plan.layout, tiles);
+    job.validate()?;
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(&out, job.to_json()).map_err(|e| format!("{}: {e}", out.display()))?;
+    eprintln!(
+        "wrote {} ({} tiles from {} STLs)",
+        out.display(),
+        job.tiles.len(),
+        hashes.len()
+    );
+    if f.has("--json") {
+        print_json(&json!({
+            "outputs": [{ "path": out, "tiles": job.tiles.len(), "inputs": hashes.len() }],
+        }));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn tiles_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let values = with(&["--only", "--out-dir"], &[COMMON_VALUES]);
+    let f = parse(args, &values)?;
+    f.reject_unknown(COMMON_SWITCHES, &values)?;
+    let [job_path] = f.positional.as_slice() else {
+        return Err(format!("render tiles takes one job file\n{USAGE}"));
+    };
+    let job_path = Path::new(job_path);
+    let dir = PathBuf::from(f.value("--out-dir").ok_or("render tiles needs --out-dir DIR")?);
+    let quiet = f.has("--quiet");
+    let job = job::Job::load(job_path)?;
+    let base = job::base_dir(job_path)?;
+    let only: Vec<&str> = f
+        .all("--only")
+        .into_iter()
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    for id in &only {
+        if !job.tiles.iter().any(|t| t.id == *id) {
+            return Err(format!("--only {id}: no such tile in {}", job_path.display()));
+        }
+    }
+    let selected: Vec<&job::JobTile> = job
+        .tiles
+        .iter()
+        .filter(|t| only.is_empty() || only.contains(&t.id.as_str()))
+        .collect();
+    // Check every input before rendering anything.
+    let mut paths = Vec::new();
+    for t in &selected {
+        paths.push(t.verify_input(&base)?);
+    }
+    let p = load_project(&f)?;
+    let mut resolved = Vec::new();
+    for (t, path) in selected.iter().zip(&paths) {
+        resolved.push(resolve_tile(&p, path, t)?);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let start = Instant::now();
+    let mut gpu = LazyGpu::default();
+    let (g, _) = gpu.get()?;
+    if !quiet {
+        eprintln!("{} tiles, {}px, on {}", selected.len(), job.layout.tile, g.adapter);
+    }
+    let n = selected.len();
+    let mut written = Vec::new();
+    for (i, (t, r)) in selected.iter().zip(&resolved).enumerate() {
+        if !quiet {
+            eprintln!("[{}/{n}] {}", i + 1, t.id);
+        }
+        let t0 = Instant::now();
+        let fr = frame::render(r, g, false, &|_| {})?;
+        let png = dir.join(format!("{}.png", t.id));
+        post::write_png(&png, &fr.rgba, fr.width, fr.height)?;
+        let w = Written {
+            path: png.to_string_lossy().into_owned(),
+            shot: t.id.clone(),
+            width: fr.width,
+            height: fr.height,
+            spp: fr.spp,
+            triangles: fr.triangles,
+            adapter: g.adapter.clone(),
+            seconds: (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0,
+            sidecar: None,
+        };
+        let mut record = serde_json::to_value(&w).unwrap();
+        record["input_sha256"] = json!(t.input_sha256);
+        let rec = dir.join(format!("{}.json", t.id));
+        std::fs::write(&rec, serde_json::to_string_pretty(&record).unwrap() + "\n")
+            .map_err(|e| format!("{}: {e}", rec.display()))?;
+        written.push(record);
+    }
+    eprintln!(
+        "wrote {n} tiles to {} in {:.1}s",
+        dir.display(),
+        start.elapsed().as_secs_f64()
+    );
+    if f.has("--json") {
+        print_json(&json!({ "outputs": written }));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn compose_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let values = ["--tiles", "--out"];
+    let f = parse(args, &values)?;
+    let switches = with(&["--allow-missing"], &[COMMON_SWITCHES]);
+    f.reject_unknown(&switches, &values)?;
+    let [job_path] = f.positional.as_slice() else {
+        return Err(format!("render compose takes one job file\n{USAGE}"));
+    };
+    let job_path = Path::new(job_path);
+    let dir = PathBuf::from(f.value("--tiles").ok_or("render compose needs --tiles DIR")?);
+    let out = PathBuf::from(f.value("--out").ok_or("render compose needs --out PATH.png")?);
+    let job = job::Job::load(job_path)?;
+    let mut rendered = Vec::new();
+    let mut missing = Vec::new();
+    let mut adapters: Vec<String> = Vec::new();
+    for t in &job.tiles {
+        let png = dir.join(format!("{}.png", t.id));
+        let rec_path = dir.join(format!("{}.json", t.id));
+        let record = if rec_path.is_file() {
+            project::read_json(&rec_path)?
+        } else {
+            Value::Null
+        };
+        if let Some(sha) = record.get("input_sha256").and_then(Value::as_str)
+            && !sha.eq_ignore_ascii_case(&t.input_sha256)
+        {
+            return Err(format!(
+                "tile {}: {} was rendered from a different input (sha256 {sha}, job says {}); \
+                 re-render it with `render tiles --only {}`",
+                t.id,
+                png.display(),
+                t.input_sha256,
+                t.id
+            ));
+        }
+        let frame = if png.is_file() {
+            let (rgba, width, height) = post::read_png(&png)?;
+            if let Some(a) = record.get("adapter").and_then(Value::as_str)
+                && !adapters.iter().any(|x| x == a)
+            {
+                adapters.push(a.to_owned());
+            }
+            Some(frame::Frame {
+                rgba,
+                width,
+                height,
+                spp: record.get("spp").and_then(Value::as_u64).unwrap_or(0) as u32,
+                triangles: record.get("triangles").and_then(Value::as_u64).unwrap_or(0) as usize,
+                geometry_s: 0.0,
+                trace_s: 0.0,
+                compose_s: 0.0,
+            })
+        } else {
+            missing.push(t.id.clone());
+            None
+        };
+        let seconds = match &frame {
+            Some(_) => record.get("seconds").and_then(Value::as_f64).unwrap_or(0.0),
+            None => 0.0,
+        };
+        rendered.push(sheet::Rendered {
+            frame,
+            label: t.label.clone(),
+            meta: json!({
+                "id": t.id,
+                "input": t.input,
+                "view": t.view,
+                "material": t.material,
+            }),
+            seconds,
+        });
+    }
+    let s = sheet::compose(rendered, &job.layout)?;
+    post::write_png(&out, &s.rgba, s.width, s.height)?;
+    let adapter = match adapters.len() {
+        0 => Value::Null,
+        _ => json!(adapters.join(", ")),
+    };
+    let mut extra = Map::new();
+    extra.insert("job".into(), json!(job_path));
+    if !missing.is_empty() {
+        extra.insert("missing".into(), json!(missing));
+    }
+    let index_path = write_index(&out, &s, &job.layout, adapter.clone(), extra)?;
+    eprintln!(
+        "wrote {} ({}x{}, {} tiles)",
+        out.display(),
+        s.width,
+        s.height,
+        s.cells.len()
+    );
+    if !missing.is_empty() {
+        eprintln!(
+            "{} of {} tiles missing in {} (blank on the sheet): {}",
+            missing.len(),
+            job.tiles.len(),
+            dir.display(),
+            missing.join(", ")
+        );
+    }
+    if f.has("--json") {
+        print_json(&json!({
+            "outputs": [{
+                "path": out, "index": index_path, "width": s.width, "height": s.height,
+                "tiles": s.cells.len(), "adapter": adapter, "missing": missing,
+            }],
+        }));
+    }
+    if missing.is_empty() || f.has("--allow-missing") {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Ok(ExitCode::FAILURE)
+    }
 }
 
 // ------------------------------------------------------------------- scene
@@ -698,6 +1083,61 @@ mod tests {
         let i = |p: &str| adhoc::StlInput::parse(p);
         let n = short_names(&[i("a/slab-m4/part.stl"), i("a/slab-m5/part.stl"), i("x/bracket.stl")]);
         assert_eq!(n, ["slab-m4/part", "slab-m5/part", "bracket"]);
+    }
+
+    fn plan_of(args: &[&str]) -> Plan {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let values = with(&["--out"], &[SHEET_VALUES, SCENE_VALUES, COMMON_VALUES]);
+        plan_sheet(&parse(&args, &values).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn plan_ids_labels_and_orbit() {
+        let p = plan_of(&["a/v032/part.stl", "a/v007/part.stl", "--orbit", "4@30"]);
+        let ids: Vec<&str> = p.tiles.iter().map(|t| t.tile.id.as_str()).collect();
+        assert_eq!(
+            &ids[..4],
+            [
+                "v032-part-az000",
+                "v032-part-az090",
+                "v032-part-az180",
+                "v032-part-az270"
+            ]
+        );
+        assert_eq!(p.tiles[1].tile.label, "v032/part · 90°");
+        assert_eq!(p.layout.cols, 4, "one row per input");
+        let scene::View::Direction(d) = p.tiles[1].tile.view else {
+            panic!("orbit views are directions")
+        };
+        assert_eq!(d, job::orbit(4, 30.0)[1]);
+        assert_eq!(p.tiles[1].meta["view"], json!(d));
+
+        let p = plan_of(&["x/bracket.stl", "--orbit", "12", "--label-from", "id"]);
+        assert_eq!(p.layout.cols, 4, "a single turntable is a block");
+        assert_eq!(p.tiles[11].tile.label, "bracket-az330");
+
+        let p = plan_of(&[
+            "b.stl@wood/walnut",
+            "b.stl",
+            "--view",
+            "1,0.5,1",
+            "--view",
+            "top",
+            "--material",
+            "#c0a080",
+        ]);
+        let ids: Vec<&str> = p.tiles.iter().map(|t| t.tile.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["b-1-0.5-1-wood-walnut", "b-top-wood-walnut", "b-1-0.5-1", "b-top"]
+        );
+        assert_eq!(p.tiles[0].tile.view, scene::View::Direction([1.0, 0.5, 1.0]));
+        assert_eq!(p.tiles[0].meta["view"], "1,0.5,1");
+        assert_eq!(p.tiles[2].tile.material.as_deref(), Some("#c0a080"));
+        assert_eq!(p.tiles[0].tile.sets[0], ("background".into(), "transparent".into()));
+        // Same short name twice: ids stay unique.
+        let p = plan_of(&["c/b.stl", "c/b.stl"]);
+        assert_eq!(p.tiles[1].tile.id, "b-2");
     }
 
     #[test]

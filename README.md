@@ -15,7 +15,7 @@ and holds no project designs, only synthetic fixtures.
 crates/castkit-core   mould geometry, checker, request/response types (no file I/O)
 crates/castkit-wasm   the same request/response for Node (wasm32-unknown-unknown)
 crates/render         gooey-render: path tracer, scenes, manifests, finish libraries, sheets
-crates/gooey-3d       the `gooey-3d` CLI: `mould build|check`, `render stl|sheet|scene|...`
+crates/gooey-3d       the `gooey-3d` CLI: `mould build|check`, `render stl|sheet|plan|tiles|compose|scene|...`
 fixtures/             synthetic parts and reports (castkit), fixtures/render (renderer)
 skill/cast-moulds/    agent skill: choosing, building, checking and printing moulds
 skill/render/         agent skill: ad hoc renders, contact sheets, scenes
@@ -84,7 +84,7 @@ const rep = JSON.parse(ck.check(stlBytes, "pla", 256));
 
 `gooey-3d render` path-traces STLs (ad hoc) or scene files (repeatable, committed).
 Logs go to stderr. `--json` prints a result record on stdout (paths, sizes, adapter,
-seconds). Exit status: 0 ok, 1 stale renders (`check`), 2 error.
+seconds). Exit status: 0 ok, 1 stale renders (`check`) or missing tiles (`compose`), 2 error.
 
 ### Ad hoc: STLs in, PNG out
 
@@ -97,6 +97,7 @@ gooey-3d render stl part.stl --material '{"color":"#c0c4c8","metalness":1,"rough
 gooey-3d render sheet parts/*.stl --view iso --view top --out sheet.png        # contact sheet
 gooey-3d render sheet part.stl --library lib.json \
     --material pla/matte --material wood/oak --material aluminium/brushed --out finishes.png
+gooey-3d render sheet part.stl --orbit 12@20 --out turntable.png        # 12 views around +Y
 gooey-3d render bounds part.stl                                       # world bounds, no GPU
 ```
 
@@ -115,8 +116,41 @@ gooey-3d render bounds part.stl                                       # world bo
   shortest unique path. Tiles are 400 px at 128 spp unless `--tile`/`--spp` say
   otherwise, and each tile is framed to its own part. `sheet.json`, next to the PNG,
   indexes every tile (rectangle, input, view, material).
+- **Orbits:** `--orbit N[@DEG]` (on `sheet` and `plan`) adds N views turning around +Y,
+  DEG above the horizon (default 20), starting from +X and turning toward +Z (front).
+  They add to any `--view`s. A single STL's orbit is laid out as a square-ish block.
+- **Labels:** `--label-from id` labels cells with tile ids (`v032-part-az030`) instead
+  of names; ids are the label pieces made file-name safe.
 - **Defaults:** 1200 px wide, 256 spp, `#f2f2f0` background, studio lights, iso
   view, frame cropped to the part. Any scene flag below applies.
+
+### Sheets in pieces: plan, tiles, compose
+
+A sheet can be planned once, rendered anywhere (in shards, on a GPU host) and
+composited without a GPU. `plan` + `tiles` + `compose` give the same PNG as `sheet`
+with the same flags.
+
+```sh
+gooey-3d render plan parts/*.stl --orbit 24 --out job.json               # no GPU
+gooey-3d render tiles job.json --out-dir tiles/                          # all tiles
+gooey-3d render tiles job.json --only part-az000,part-az015 --out-dir tiles/
+gooey-3d render compose job.json --tiles tiles/ --out sheet.png          # no GPU
+```
+
+- **Job file** (`gooey-3d-job/v1`): `{schema, layout, tiles: [{id, input,
+  input_sha256, view, material, up, sets, label}]}`. `layout` is the sheet grid
+  (`cols`, `tile`, `gap`, `labels`, `background`, `text`). `input` is relative to the
+  job file when the STL lies under its directory, else absolute; `input_sha256` is the
+  STL's SHA-256. `view` is a view name or a direction; `sets` are scene `--set` pairs
+  applied in order. Other tools (variant batches) can write job files directly.
+- **`tiles`** checks every selected tile's STL against `input_sha256` before
+  rendering (exit 2 on a mismatch) and writes `DIR/<id>.png` plus `DIR/<id>.json` (the
+  `--json` record with `shot` = tile id and the tile's `input_sha256`). Material names
+  need the same library as `plan` (`--library` or the project's).
+- **`compose`** writes the sheet and its `sheet.json` index (cells carry their tile
+  `id`). A tile without a PNG is drawn as a labelled blank cell and listed in the index
+  (`missing`), on stderr and in `--json`; the exit status is then 1 unless
+  `--allow-missing`. A tile whose record names a different `input_sha256` is an error.
 
 ### Scene flags
 

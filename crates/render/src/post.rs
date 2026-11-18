@@ -92,6 +92,14 @@ pub fn write_png(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<()
     .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Read a PNG as 8-bit straight-alpha RGBA (what [`write_png`] wrote).
+pub fn read_png(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
+    let img = image::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let rgba = img.into_rgba8();
+    let (w, h) = rgba.dimensions();
+    Ok((rgba.into_raw(), w, h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
