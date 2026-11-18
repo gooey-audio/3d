@@ -15,10 +15,15 @@ jobs:
       matrix:
         os: [macos-15, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: engine
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
       # GPU tests skip themselves without an adapter; `gpu::` is skipped outright because
       # hosted runners have no GPU (or only a paravirtual one).
       - run: cargo test --release --workspace -- --skip 'gpu::'
@@ -36,10 +41,10 @@ jobs:
             target/release/gooey-3d mould build "$spec" --check --strict || echo "::warning::$spec: STL bytes differ on ${{ matrix.os }}"
           done
       - name: render check (fixture renders match their inputs; no GPU)
-        working-directory: fixtures/render
+        working-directory: engine/fixtures/render
         run: ../../target/release/gooey-3d render check
       - name: render bounds and materials run without a GPU
-        working-directory: fixtures/render
+        working-directory: engine/fixtures/render
         run: |
           ../../target/release/gooey-3d render bounds assembly.json --explode 1 > /dev/null
           ../../target/release/gooey-3d render materials --json > /dev/null
@@ -52,17 +57,22 @@ jobs:
       matrix:
         os: [macos-15, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: engine
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.13
       - name: build the worker (host target -> cad-worker/dist/gooey-cad-worker)
         run: cad-worker/build.sh
       - name: typecheck the worker
-        working-directory: cad-worker
+        working-directory: engine/cad-worker
         run: bunx tsc --noEmit
       - name: cad tests (compiled worker)
         run: cargo test --release -p gooey-cad -p gooey-3d
@@ -74,31 +84,46 @@ jobs:
 
   msrv:
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: engine
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
       # castkit-core and castkit-wasm keep 1.85; gooey-render, gooey-cad and gooey-3d need 1.88 (wgpu, let-chains).
       - run: cargo check -p castkit-core -p castkit-wasm
 
   msrv-render:
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: engine
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
       - run: cargo check -p gooey-render -p gooey-cad -p gooey-3d
       # The render-only build (Modal) needs neither cmake nor bun.
       - run: cargo check -p gooey-3d --no-default-features --features render
 
   wasm:
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: engine
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
       - uses: ./.github/actions/llvm20
       - uses: taiki-e/install-action@v2
         with:
