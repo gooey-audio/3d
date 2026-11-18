@@ -9,6 +9,7 @@
 
 ```sh
 cd engine && cargo test --release --workspace     # the engine (see engine/README.md)
+cd studio && cargo run --release -p gooey-studio -- PARTS_DIR --open   # the studio (see studio/README.md)
 ```
 
 Licensed under MIT or Apache-2.0 ([`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE)).
