@@ -486,9 +486,15 @@ fn plan_sheet(f: &Flags) -> Result<Plan, String> {
         gap,
         labels: !f.has("--no-labels"),
         background,
-        text: [40, 40, 40],
+        text: label_color(background),
     };
     Ok(Plan { layout, tiles })
+}
+
+/// Dark labels on light sheets, light labels on dark ones.
+fn label_color(bg: [u8; 3]) -> [u8; 3] {
+    let luma = 0.2126 * bg[0] as f64 + 0.7152 * bg[1] as f64 + 0.0722 * bg[2] as f64;
+    if luma < 110.0 { [205, 207, 212] } else { [40, 40, 40] }
 }
 
 /// Resolve one job tile against the STL at `path`.

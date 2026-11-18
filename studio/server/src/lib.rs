@@ -11,6 +11,7 @@ pub mod agent;
 pub mod api;
 pub mod assets;
 pub mod builder;
+pub mod renders;
 pub mod scene;
 pub mod watch;
 
@@ -114,6 +115,7 @@ pub struct App {
     pub library: Library,
     pub events: broadcast::Sender<String>,
     pub agent: Option<agent::Config>,
+    pub renders: renders::Renders,
     builder: builder::Handle,
     parts: Mutex<HashMap<String, Part>>,
     /// Running agent turns by part.
@@ -153,7 +155,11 @@ impl App {
             return Err(AppError(format!("{} is not a directory", dir.display())));
         }
         let library = match &cfg.library {
-            Some(p) => Library::load(p)?,
+            // Absolute, so render subprocesses (run in their job directory) find it too.
+            Some(p) => Library::load(
+                &p.canonicalize()
+                    .map_err(|e| AppError(format!("{}: {e}", p.display())))?,
+            )?,
             None => match gooey_render::project::Project::find(&dir) {
                 Some(p) => gooey_render::project::Project::load(&p)?.library,
                 None => Library::default(),
@@ -169,6 +175,7 @@ impl App {
             std::fs::write(&ignore, "*\n")?;
         }
         let worker = cfg.worker.or_else(locate_worker);
+        let renders = renders::Renders::load(&data);
         let (events, _) = broadcast::channel(1024);
         Ok(Arc::new_cyclic(|weak: &std::sync::Weak<App>| {
             let weak = weak.clone();
@@ -183,6 +190,7 @@ impl App {
                 library,
                 events,
                 agent: cfg.agent,
+                renders,
                 builder,
                 parts: Mutex::new(HashMap::new()),
                 turns: Mutex::new(HashMap::new()),

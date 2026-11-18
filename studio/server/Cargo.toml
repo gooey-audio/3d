@@ -15,7 +15,7 @@ path = "src/main.rs"
 gooey-cad = { path = "../../engine/crates/cad" }
 gooey-render = { path = "../../engine/crates/render" }
 anyhow = "1"
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "multipart"] }
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 mime_guess = "2"

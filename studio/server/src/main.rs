@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use gooey_cad::WorkerCommand;
-use gooey_studio::{App, Config, agent, api, watch};
+use gooey_studio::{App, Config, agent, api, renders, watch};
 
 #[derive(Parser)]
 #[command(
@@ -50,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
     })
     .map_err(|e| anyhow::anyhow!("{}", e.0))?;
     let _watcher = watch::start(app.clone())?;
+    renders::spawn_runner(app.clone());
 
     let port = args.port;
     let router = api::app(app.clone(), port);
@@ -70,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         Some(a) => eprintln!("  agent: {} at {}", a.model, a.base_url),
         None => eprintln!("  agent: off (set DEEPSEEK_API_KEY)"),
     }
+    eprintln!("  renders: {}", renders::gooey_3d().display());
     eprintln!("  {url}");
     if args.open {
         let _ = std::process::Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" })
