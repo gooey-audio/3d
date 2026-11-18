@@ -6,7 +6,8 @@
 //! - [`materials`]: `gooey-materials/v1` finish libraries, always supplied by the caller.
 //! - [`project`]: committed renders with input-hash sidecars (`render sync|check`).
 //! - [`adhoc`]: scenes built in memory from STL paths and material specs.
-//! - [`frame`]: one resolved scene to RGBA pixels; [`sheet`]: contact sheets.
+//! - [`frame`]: one resolved scene to RGBA pixels; [`sheet`]: contact sheets;
+//!   [`job`]: sheets planned as independent tiles (`gooey-3d-job/v1`).
 
 pub mod adhoc;
 pub mod bvh;
@@ -14,6 +15,7 @@ pub mod camera;
 pub mod env;
 pub mod frame;
 pub mod gpu;
+pub mod job;
 pub mod manifest;
 pub mod materials;
 pub mod post;

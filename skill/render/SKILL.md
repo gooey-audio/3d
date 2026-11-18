@@ -47,6 +47,26 @@ tile's rectangle to its input, view and material. Tiles are framed to their own 
 so sizes aren't comparable across tiles. Use `gooey-3d render bounds a.stl b.stl` for
 real dimensions (mm, no GPU).
 
+- `--orbit N[@DEG]` adds N views turning around the part (DEG above the horizon,
+  default 20): `gooey-3d render sheet part.stl --orbit 12 --out .context/turntable.png`.
+- `--label-from id` labels cells with tile ids (e.g. variant names) instead of names.
+
+### Sheets in pieces
+
+The same sheet can be split: plan it (no GPU), render its tiles anywhere, composite
+(no GPU). The PNG is identical to `render sheet` with the same flags.
+
+```sh
+gooey-3d render plan parts/*.stl --orbit 24 --out .context/job.json
+gooey-3d render tiles .context/job.json --out-dir .context/tiles [--only ID,ID]
+gooey-3d render compose .context/job.json --tiles .context/tiles --out .context/sheet.png
+```
+
+`job.json` (`gooey-3d-job/v1`) lists tiles `{id, input, input_sha256, view, material,
+up, sets, label}`. `tiles` refuses to render if an STL changed since the plan.
+`compose` draws missing tiles as labelled blanks, lists them, and exits 1 unless
+`--allow-missing`; re-render just those with `tiles --only`.
+
 ## 3. Materials
 
 A material spec is one of:
@@ -87,7 +107,8 @@ gooey-3d render info path/to/scene.json  # resolved scene, bounds, adapter
 ## 5. Automation
 
 - Add `--json` for a result on stdout: output paths, sizes, adapter and seconds
-  (`sheet` adds the index path). Logs stay on stderr.
-- Exit codes: 0 ok, 1 stale renders (`check`), 2 any error (the message is on stderr).
+  (`sheet` and `compose` add the index path; `compose` adds `missing`). Logs stay on stderr.
+- Exit codes: 0 ok, 1 stale renders (`check`) or missing tiles (`compose`), 2 any
+  error (the message is on stderr).
 - There is no GPU on hosted CI: run `check` there (no GPU) and `sync` locally or on a
   GPU runner. `RENDER_ADAPTER=software` forces the slow software fallback.
