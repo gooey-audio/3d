@@ -1,0 +1,14 @@
+[package]
+name = "gooey-cad"
+description = "Replicad part scripts to validated STL + STEP: hosts the cad-worker process, checks results with castkit"
+version.workspace = true
+edition.workspace = true
+# let-chains (as gooey-3d).
+rust-version = "1.88"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+castkit-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true

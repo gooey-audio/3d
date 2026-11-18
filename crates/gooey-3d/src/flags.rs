@@ -36,7 +36,7 @@ impl Flags {
         self.values.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
     }
     /// Every value given for `k`, in order.
-    #[cfg_attr(not(feature = "render"), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "render", feature = "cad")), allow(dead_code))]
     pub fn all(&self, k: &str) -> Vec<&str> {
         self.values
             .iter()

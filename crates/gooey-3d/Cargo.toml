@@ -1,6 +1,6 @@
 [package]
 name = "gooey-3d"
-description = "gooey-3d: casting moulds (castkit) and path-traced renders from one CLI"
+description = "gooey-3d: casting moulds (castkit), Replicad part builds and path-traced renders from one CLI"
 version.workspace = true
 edition.workspace = true
 rust-version = "1.88"
@@ -12,14 +12,22 @@ name = "gooey-3d"
 path = "src/main.rs"
 
 [features]
-default = ["mould", "render"]
+default = ["mould", "render", "cad"]
 # `gooey-3d mould …`: needs cmake and a C++ compiler (Manifold).
 mould = ["dep:castkit-core"]
 # `gooey-3d render …`: wgpu path tracer.
 render = ["dep:gooey-render"]
+# `gooey-3d cad …`: Replicad part scripts via the cad-worker process (cad-worker/,
+# built separately with bun); validation needs castkit-core (cmake, C++).
+cad = ["dep:gooey-cad"]
 parallel = ["castkit-core?/parallel"]
 
 [dependencies]
 castkit-core = { workspace = true, optional = true }
 gooey-render = { workspace = true, optional = true }
+gooey-cad = { workspace = true, optional = true }
 serde_json.workspace = true
+
+[[test]]
+name = "cad"
+required-features = ["cad"]

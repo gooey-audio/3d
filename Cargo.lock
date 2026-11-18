@@ -396,7 +396,17 @@ name = "gooey-3d"
 version = "0.1.0"
 dependencies = [
  "castkit-core",
+ "gooey-cad",
  "gooey-render",
+ "serde_json",
+]
+
+[[package]]
+name = "gooey-cad"
+version = "0.1.0"
+dependencies = [
+ "castkit-core",
+ "serde",
  "serde_json",
 ]
 

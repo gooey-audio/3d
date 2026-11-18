@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/castkit-core", "crates/castkit-wasm", "crates/render", "crates/gooey-3d"]
-default-members = ["crates/castkit-core", "crates/render", "crates/gooey-3d"]
+members = ["crates/castkit-core", "crates/castkit-wasm", "crates/render", "crates/cad", "crates/gooey-3d"]
+default-members = ["crates/castkit-core", "crates/render", "crates/cad", "crates/gooey-3d"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,7 @@ repository = "https://github.com/gooey-audio/3d"
 [workspace.dependencies]
 castkit-core = { path = "crates/castkit-core" }
 gooey-render = { path = "crates/render" }
+gooey-cad = { path = "crates/cad" }
 # Pinned exactly: the crate is young, and every golden depends on Manifold's
 # triangulation. Only castkit_core::solid imports it.
 manifold-csg = { version = "=0.4.2", default-features = false }
