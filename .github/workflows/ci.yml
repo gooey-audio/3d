@@ -134,3 +134,29 @@ jobs:
       - run: scripts/build-wasm.sh target/pkg
       - run: node crates/castkit-wasm/tests/node.mjs target/pkg fixtures
       - run: ls -l target/pkg
+
+  # gooey-studio: the web UI (typecheck + build) and the server's tests, with the CAD
+  # worker so the build test runs too.
+  studio:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: studio
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - name: web UI
+        working-directory: studio/web
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun run build
+      - name: build the CAD worker
+        run: ../engine/cad-worker/build.sh
+      - run: cargo test --release
