@@ -21,7 +21,12 @@ export type BuildSummary = {
   error?: CadError;
   info?: { defaultParams: Record<string, unknown>; paramRanges: Record<string, [number, number]> } | null;
   at: number;
+  /** On a failed build: the last good build (whose mesh and faces are still stored). */
+  lastGood?: { rev: number; at: number; report?: Record<string, unknown> } | null;
 };
+
+/** A script checkpoint under `parts/<part>/history/<id>.json` (id = ms timestamp). */
+export type CheckpointInfo = { id: string; at: number; bytes: number };
 
 export type Upload = { sha256: string; name: string; bytes: number; created_ms: number };
 
@@ -132,6 +137,22 @@ export async function checkpoint(part: string): Promise<string> {
   return id;
 }
 
+/** The part's checkpoints, newest first. */
+export async function listCheckpoints(part: string): Promise<CheckpointInfo[]> {
+  const blobs = await listAll(partKey(part, "history/"));
+  const out: CheckpointInfo[] = [];
+  for (const b of blobs) {
+    const m = /\/history\/(\d+)\.json$/.exec(b.pathname);
+    if (m) out.push({ id: m[1], at: Number(m[1]), bytes: b.size });
+  }
+  return out.sort((a, b) => b.at - a.at);
+}
+
+export async function readCheckpoint(part: string, id: string): Promise<{ script: string | null; scene: unknown } | null> {
+  if (!/^\d+$/.test(id)) throw new StoreError("bad checkpoint id");
+  return readJson<{ script: string | null; scene: unknown }>(partKey(part, `history/${id}.json`));
+}
+
 export async function restore(part: string, id: string): Promise<void> {
   if (!/^\d+$/.test(id)) throw new StoreError("bad checkpoint id");
   const c = await readJson<{ script: string | null; scene: unknown }>(partKey(part, `history/${id}.json`));
@@ -181,6 +202,21 @@ export async function readChat<T = unknown>(part: string): Promise<T[]> {
 
 export async function writeChat(part: string, messages: unknown[]): Promise<void> {
   await writeJson(partKey(part, "chat.json"), messages);
+}
+
+/** The agent turn holding the part (`parts/<part>/turn.json`); a best-effort lock. */
+export type TurnLock = { id: string; model: string; started_ms: number; expires_ms: number };
+
+export async function readTurn(part: string): Promise<TurnLock | null> {
+  return readJson<TurnLock>(partKey(part, "turn.json")).catch(() => null);
+}
+
+export async function writeTurn(part: string, t: TurnLock): Promise<void> {
+  await write(partKey(part, "turn.json"), JSON.stringify(t), "application/json");
+}
+
+export async function deleteTurn(part: string): Promise<void> {
+  await del(partKey(part, "turn.json")).catch(() => {});
 }
 
 // --- uploads -------------------------------------------------------------------
@@ -259,6 +295,11 @@ async function open(path: string): Promise<BlobStream | null> {
 /** The last good mesh as a stream (large meshes are not buffered in the function). */
 export async function openMesh(part: string): Promise<BlobStream | null> {
   return open(partKey(part, "mesh.stl"));
+}
+
+/** The stored conversation as a stream (streamed responses are not capped at 4.5 MB). */
+export async function openChat(part: string): Promise<BlobStream | null> {
+  return open(partKey(part, "chat.json"));
 }
 
 export async function openJobImage(id: string): Promise<BlobStream | null> {

@@ -43,3 +43,18 @@
 .input textarea { flex: 1; resize: none; height: 64px; font: inherit; color: inherit; background: transparent; border: 1px solid var(--c-line); border-radius: 5px; padding: 4px 6px; }
 .button { font: inherit; color: inherit; background: var(--c-panel); border: 1px solid var(--c-line); border-radius: 5px; padding: 3px 12px; cursor: pointer; }
 .button:disabled { opacity: 0.45; cursor: default; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding: 6px 8px 0; border-top: 1px solid var(--c-line); }
+.chips + .input { border-top: none; }
+.chip { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; font-family: ui-monospace, Menlo, monospace; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--c-accent); color: var(--c-accent); background: rgba(122, 162, 247, 0.1); white-space: nowrap; }
+.chipX { background: none; border: none; color: inherit; padding: 0 0 0 2px; font: inherit; font-size: 13px; line-height: 1; cursor: pointer; opacity: 0.8; }
+.chipX:hover { opacity: 1; }
+.sentChips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.thumb { display: block; padding: 0 8px 6px; }
+.thumb img { display: block; max-width: 100%; max-height: 160px; border-radius: 4px; border: 1px solid var(--c-line); background: rgba(127, 127, 127, 0.1); }
+.toolResult { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--c-muted); }
+.diff { margin: 0; white-space: pre; overflow-x: auto; font-size: 11px; line-height: 1.4; }
+.dAdd { color: var(--c-good); background: rgba(127, 201, 143, 0.12); display: inline-block; min-width: 100%; }
+.dDel { color: var(--c-bad); background: rgba(240, 113, 120, 0.12); display: inline-block; min-width: 100%; }
+.dHunk { color: var(--c-accent); }
+.dFile { color: var(--c-muted); }
+.locked { font-size: 12px; border: 1px solid var(--c-warn); color: var(--c-warn); background: rgba(230, 180, 80, 0.08); border-radius: 6px; padding: 6px 8px; overflow-wrap: anywhere; }

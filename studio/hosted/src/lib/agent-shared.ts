@@ -1,8 +1,10 @@
 // Agent chat types and helpers shared by the server (route, tools) and the client (ChatPanel).
 // No server imports here.
 import type { UIMessage } from "ai";
+import type { FaceSelection } from "./selection";
 
-/** Metadata on the assistant message that answers a user turn. */
+/** Message metadata. On the assistant message that answers a user turn: the turn's facts. On a
+ *  user message: what the user pointed at when sending it. */
 export type ChatMeta = {
   /** store.checkpoint id taken before the turn changed anything ("revert to before this turn"). */
   checkpoint?: string;
@@ -15,17 +17,58 @@ export type ChatMeta = {
   error?: string;
   /** The user stopped the turn. */
   stopped?: boolean;
+  /** User messages: faces picked in the viewer, sent as context for this turn. */
+  selection?: FaceSelection[];
 };
 
 export type ChatMessage = UIMessage<ChatMeta>;
 
-/** Request body of `POST /api/chat`. */
-export type ChatRequest = { part: string; model: string; messages: ChatMessage[] };
+/** Request body of `POST /api/chat`. Only the new user message travels: the server keeps the
+ *  history (`parts/<part>/chat.json`). A message whose id is already stored replaces it and
+ *  everything after it (regenerate, or a retry after a failed request). */
+export type ChatRequest = {
+  part: string;
+  model: string;
+  message: ChatMessage;
+  trigger?: "submit-message" | "regenerate-message";
+};
+
+/** `code` of the 409 response when another turn holds the part. */
+export const TURN_LOCKED = "turn-locked";
 
 /** Tools whose results change the part (script, scene or build): the UI reloads it. */
 export const MUTATING_TOOLS = new Set(["edit_script", "write_script", "set_params", "update_scene"]);
 
 export const MAX_STEPS = 24;
+
+/** At most this many faces ride along with one message. */
+export const MAX_SELECTION = 24;
+
+/** Replicad surface type names (the face table's `type`) as the chips show them. */
+const SURFACE: Record<string, string> = {
+  PLANE: "plane",
+  CYLINDRE: "cylinder",
+  CONE: "cone",
+  SPHERE: "sphere",
+  TORUS: "torus",
+  BEZIER_SURFACE: "bezier",
+  BSPLINE_SURFACE: "bspline",
+  REVOLUTION_SURFACE: "revolution",
+  EXTRUSION_SURFACE: "extrusion",
+  OFFSET_SURFACE: "offset",
+  OTHER_SURFACE: "other",
+};
+
+export const surfaceLabel = (type: string) => SURFACE[type] ?? type.toLowerCase();
+
+/** "face 12 · plane" */
+export const selectionLabel = (s: Pick<FaceSelection, "face" | "type">) => `face ${s.face} · ${surfaceLabel(s.type)}`;
+
+/** The UI part of an edit_script / write_script result (`diff` is stripped for the model). */
+export type ScriptDiff = { diff: string; added: number; removed: number };
+
+/** The UI part of a look_at_part result: the render job and where its image is. */
+export type LookResult = { ok: true; job: string; image: string; views: unknown[]; seconds?: number; seen: boolean };
 
 type BuildLike = {
   ok?: boolean;
@@ -42,18 +85,20 @@ const fmt = (x: number) => (Math.round(x * 10) / 10).toString();
 /** A one-line summary of a tool call for its chip. */
 export function summarizeTool(name: string, input: unknown, output: unknown, errorText?: string): ToolSummary {
   if (errorText) return { text: errorText, state: "err" };
-  if (output === undefined) return { text: "…", state: "run" };
+  if (output === undefined) return { text: name === "look_at_part" ? "rendering…" : "…", state: "run" };
   const r = (output ?? {}) as Record<string, unknown> & BuildLike;
   if (r.ok === false && typeof r.error === "string") return { text: r.error, state: "err" };
+  const d = r.script_diff as ScriptDiff | undefined;
+  const delta = d && (d.added || d.removed) ? `+${d.added} −${d.removed}, ` : "";
   const build = (r.size_mm || (r.error && typeof r.error === "object") ? r : (r.build as BuildLike | undefined)) ?? undefined;
-  if (build && build.ok === false && build.error && typeof build.error === "object") {
+  if (name !== "look_at_part" && build && build.ok === false && build.error && typeof build.error === "object") {
     const e = build.error;
-    return { text: `${e.kind ?? "error"}${e.line ? ` at line ${e.line}` : ""}: ${e.message ?? ""}`, state: "err" };
+    return { text: `${delta}${e.kind ?? "error"}${e.line ? ` at line ${e.line}` : ""}: ${e.message ?? ""}`, state: "err" };
   }
-  if (build?.ok && build.size_mm) {
+  if (name !== "look_at_part" && build?.ok && build.size_mm) {
     const s = build.size_mm.map(fmt).join(" × ");
     const t = build.seconds !== undefined ? ` in ${fmt(build.seconds)}s` : "";
-    return { text: `built ${s} mm${t}${build.note ? " (unchanged)" : ""}`, state: "ok" };
+    return { text: `${delta}built ${s} mm${t}${build.note ? " (unchanged)" : ""}`, state: "ok" };
   }
   const args = (input ?? {}) as { patch?: Record<string, unknown> };
   switch (name) {
@@ -67,6 +112,13 @@ export function summarizeTool(name: string, input: unknown, output: unknown, err
       return { text: `queued ${r.job} (${r.tiles} tiles)`, state: "ok" };
     case "get_report":
       return { text: r.ok ? "report" : "no good build", state: r.ok ? "ok" : "err" };
+    case "get_faces":
+      return { text: `${(r.faces as unknown[] | undefined)?.length ?? 0} of ${r.total ?? 0} faces`, state: "ok" };
+    case "look_at_part": {
+      const l = r as unknown as LookResult;
+      const t = l.seconds !== undefined ? ` in ${fmt(l.seconds)}s` : "";
+      return { text: `${l.views?.length ?? 0} views${t}${l.seen ? "" : " (shown to you; the model cannot see images)"}`, state: "ok" };
+    }
   }
   return { text: "ok", state: "ok" };
 }

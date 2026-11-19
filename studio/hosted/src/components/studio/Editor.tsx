@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { javascript } from "@codemirror/lang-javascript";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { Annotation, Compartment, EditorState } from "@codemirror/state";
+import { Annotation, Compartment, EditorState, Prec } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { lintGutter, setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import type { CadError } from "./api";
@@ -18,6 +18,8 @@ type Props = {
   error: CadError | null;
   onChange: (text: string) => void;
   onSave: () => void;
+  /** Cmd/Ctrl-Enter: save and rebuild now. */
+  onBuild?: () => void;
 };
 
 const external = Annotation.define<boolean>();
@@ -27,13 +29,13 @@ const theme = EditorView.theme({
   ".cm-scroller": { fontFamily: "ui-monospace, 'JetBrains Mono', Menlo, monospace" },
 });
 
-export function Editor({ docKey, doc, readOnly, error, onChange, onSave }: Props) {
+export function Editor({ docKey, doc, readOnly, error, onChange, onSave, onBuild }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const ro = useRef(new Compartment());
-  const cb = useRef({ onChange, onSave });
+  const cb = useRef({ onChange, onSave, onBuild });
   useLayoutEffect(() => {
-    cb.current = { onChange, onSave };
+    cb.current = { onChange, onSave, onBuild };
   });
 
   useEffect(() => {
@@ -48,7 +50,8 @@ export function Editor({ docKey, doc, readOnly, error, onChange, onSave }: Props
           oneDark,
           theme,
           ro.current.of(EditorState.readOnly.of(readOnly)),
-          keymap.of([
+          // Above basicSetup's keymap, which binds Mod-Enter to insertBlankLine.
+          Prec.high(keymap.of([
             {
               key: "Mod-s",
               preventDefault: true,
@@ -57,7 +60,15 @@ export function Editor({ docKey, doc, readOnly, error, onChange, onSave }: Props
                 return true;
               },
             },
-          ]),
+            {
+              key: "Mod-Enter",
+              preventDefault: true,
+              run: () => {
+                (cb.current.onBuild ?? cb.current.onSave)();
+                return true;
+              },
+            },
+          ])),
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !u.transactions.some((t) => t.annotation(external))) {
               cb.current.onChange(u.state.doc.toString());

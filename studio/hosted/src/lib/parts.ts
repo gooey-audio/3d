@@ -31,6 +31,8 @@ export async function buildPart(part: string): Promise<BuildSummary> {
     info: res.info ?? prev?.info ?? null,
     at: Date.now(),
   };
+  // A failed build keeps pointing at the last good one: its mesh, faces and report stay current.
+  if (!res.ok && prev) summary.lastGood = prev.ok ? { rev: prev.rev, at: prev.at, report: prev.report } : (prev.lastGood ?? null);
   // Builds take a few seconds and may overlap (autosave, sliders, the agent): a result for a
   // script or parameters that changed meanwhile must not replace the newer build's mesh.
   const [nowScript, nowScene] = await Promise.all([store.readScript(part), store.readScene(part)]);

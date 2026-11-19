@@ -1,8 +1,11 @@
 // Types and fetch helpers for the studio API (src/app/api).
-import type { BuildSummary, CadError, PartInfo, RenderJob, Upload } from "@/lib/store";
+import type { BuildSummary, CadError, CheckpointInfo, PartInfo, RenderJob, Upload } from "@/lib/store";
+import type { Face } from "@/lib/selection";
 import type { Resolved, Scene } from "@/lib/scene";
 
-export type { BuildSummary, CadError, PartInfo, RenderJob, Upload, Resolved, Scene };
+export type { BuildSummary, CadError, CheckpointInfo, Face, PartInfo, RenderJob, Upload, Resolved, Scene };
+
+export type Checkpoint = { id: string; at: number; script: string | null; scene: unknown };
 
 export type Report = {
   params: Record<string, unknown>;
@@ -64,6 +67,11 @@ export const api = {
     call<{ scene: Scene; resolved: Resolved; build: BuildSummary | null }>("PATCH", `${p(part)}/scene`, patch),
   renderPart: (part: string) => call<RenderJob>("POST", `${p(part)}/render`),
   meshUrl: (part: string, v: number | string) => `${p(part)}/mesh?v=${v}`,
+  faces: (part: string) => call<Face[]>("GET", `${p(part)}/faces`),
+  history: (part: string) => call<CheckpointInfo[]>("GET", `${p(part)}/history`),
+  checkpoint: (part: string, id: string) => call<Checkpoint>("GET", `${p(part)}/history?id=${encodeURIComponent(id)}`),
+  saveCheckpoint: (part: string) => call<{ id: string }>("POST", `${p(part)}/history`),
+  revert: (part: string, id: string) => call<{ ok: boolean; build: BuildSummary }>("POST", `${p(part)}/revert/${encodeURIComponent(id)}`),
   stlDownloadUrl: (part: string) => `${p(part)}/mesh?download`,
   stepUrl: (part: string) => `${p(part)}/step`,
   uploads: () => call<Upload[]>("GET", "/api/uploads"),
