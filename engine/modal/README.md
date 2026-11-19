@@ -110,3 +110,37 @@ runs it matched the bill within about 2%). `modal billing report --for today -r 
   waiting for a container. Crashes, timeouts and non-NVIDIA adapters raise, and
   Modal retries them once (`retries=1`).
 - Stop a stuck run with Ctrl-C; `modal app logs gooey-render` shows the container side.
+
+## Studio API (gooey_api.py)
+
+`modal/gooey_api.py` is the hosted studio's backend (app `gooey-3d-api`): a FastAPI app
+on one web endpoint implementing the "Modal HTTP API" in `studio/hosted/CONTRACT.md`.
+
+- `POST /build` runs `gooey-3d cad build --json` (then `cad params`) inline in the web
+  container (CPU, 4 cores, 6 GiB, up to 4 requests at once, kept warm 300 s after the
+  last request) and returns the report, the STL (and STEP with `step: true`) as base64.
+- `POST /render` spawns `render_job` on a GPU (T4, then L4; at most 4 containers, 900 s
+  timeout, warm 60 s) running `gooey-3d render sheet` or `render stl`, and returns a
+  `call_id` at once; `GET /render/{call_id}` polls it (results are kept by Modal for a
+  limited time, so callers store the PNG as soon as it is done).
+- The image is the full `gooey-3d` build (cad + render + mould: cmake, g++, git for
+  Manifold) with a linux-x64 `gooey-cad-worker` (bun 1.3.13) next to the binary. The
+  worker is built in its own layer, so Rust edits and worker edits rebuild only their part.
+
+```sh
+modal secret create gooey-3d-api STUDIO_MODAL_TOKEN="$(cat /tmp/studio-modal-token)" --force
+modal deploy modal/gooey_api.py      # prints the web URL (MODAL_API_URL)
+```
+
+Every route needs `Authorization: Bearer $STUDIO_MODAL_TOKEN`, else 401. The same token
+goes in the Vercel project's `STUDIO_MODAL_TOKEN`.
+
+Measured (2026-11-19, from a Mac, brace.js): a build is 10 s cold (container start) and
+2.1 to 3.2 s warm (about 2 s of it the build itself; CPU hosts vary), a syntax or params
+error about 0.4 s. A 2-STL x 2-view x 2-material sheet at 256 px / 64 spp took 9.5 to 14 s
+wall cold on a T4 (1.6 to 4.7 s inside the function), a 1200 px / 128 spp still 7 s.
+
+Cost: the web container bills CPU and memory while warm (4 cores + 6 GiB, roughly
+$0.25/h), so each editing session pays up to 5 min of idle after its last build; nothing
+when idle. Renders bill GPU seconds like `gooey-render` plus up to 60 s of warm idle per
+burst. `modal app logs gooey-3d-api` shows both sides.

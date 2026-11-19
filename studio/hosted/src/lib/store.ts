@@ -236,3 +236,64 @@ export async function deleteJob(id: string): Promise<void> {
   if (!validJob(id)) throw new StoreError("bad render id");
   await del([key(`renders/${id}.json`), key(`renders/${id}.png`)]).catch(() => {});
 }
+
+// --- streaming reads and listings for the HTTP routes ----------------------------
+
+export type BlobStream = { stream: ReadableStream<Uint8Array>; size: number; contentType: string };
+
+async function open(path: string): Promise<BlobStream | null> {
+  const r = await get(path, { access: "private", useCache: false }).catch(() => null);
+  if (!r || r.statusCode !== 200 || !r.stream) return null;
+  return { stream: r.stream, size: r.blob.size, contentType: r.blob.contentType };
+}
+
+/** The last good mesh as a stream (large meshes are not buffered in the function). */
+export async function openMesh(part: string): Promise<BlobStream | null> {
+  return open(partKey(part, "mesh.stl"));
+}
+
+export async function openJobImage(id: string): Promise<BlobStream | null> {
+  if (!validJob(id)) throw new StoreError("bad render id");
+  return open(key(`renders/${id}.png`));
+}
+
+export type PartInfo = { name: string; mesh: boolean; updated_ms: number };
+
+/** Parts with whether they have a mesh, from one listing. */
+export async function listPartsInfo(): Promise<PartInfo[]> {
+  const blobs = await listAll(key("parts/"));
+  const parts = new Map<string, PartInfo>();
+  const files = new Map<string, Set<string>>();
+  for (const b of blobs) {
+    const m = /^3d-studio\/parts\/([^/]+)\/([^/]+)$/.exec(b.pathname);
+    if (!m) continue;
+    if (!files.has(m[1])) files.set(m[1], new Set());
+    files.get(m[1])!.add(m[2]);
+    const p = parts.get(m[1]) ?? { name: m[1], mesh: false, updated_ms: 0 };
+    p.updated_ms = Math.max(p.updated_ms, new Date(b.uploadedAt).getTime());
+    parts.set(m[1], p);
+  }
+  return [...parts.values()]
+    .filter((p) => files.get(p.name)!.has("script.js"))
+    .map((p) => ({ ...p, mesh: files.get(p.name)!.has("mesh.stl") }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Where browsers upload large STLs directly (presigned); `adoptIncoming` then files them. */
+export const INCOMING = "3d-studio/uploads/incoming/";
+
+export function validIncoming(pathname: string): boolean {
+  return /^3d-studio\/uploads\/incoming\/[A-Za-z0-9_-]{8,64}\.stl$/.test(pathname);
+}
+
+/** Moves a directly uploaded STL to `uploads/<sha256>.stl` with its metadata. */
+export async function adoptIncoming(pathname: string, name: string): Promise<Upload> {
+  if (!validIncoming(pathname)) throw new StoreError("bad upload path");
+  const bytes = await readBytes(pathname);
+  if (!bytes) throw new StoreError("the upload did not arrive");
+  try {
+    return await saveUpload(name, bytes);
+  } finally {
+    await del(pathname).catch(() => {});
+  }
+}

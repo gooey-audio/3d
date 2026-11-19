@@ -1,0 +1,45 @@
+/* Agent chat. Colours come from the app's custom properties when it defines them. */
+.chat {
+  --c-line: var(--line, #2c2f35);
+  --c-muted: var(--muted, #868b95);
+  --c-accent: var(--accent, #7aa2f7);
+  --c-good: var(--good, #7fc98f);
+  --c-bad: var(--bad, #f07178);
+  --c-warn: var(--warn, #e6b450);
+  --c-panel: var(--panel, rgba(127, 127, 127, 0.06));
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.head { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--c-line); }
+.title { font-weight: 600; }
+.picker { flex: 1; min-width: 0; max-width: 240px; font: inherit; font-size: 12px; padding: 2px 4px; color: inherit; background: transparent; border: 1px solid var(--c-line); border-radius: 5px; }
+.picker option, .picker optgroup { color: initial; }
+.link { background: none; border: none; color: var(--c-accent); padding: 0 4px; font: inherit; font-size: 12px; cursor: pointer; }
+.link:disabled { opacity: 0.45; cursor: default; }
+.log { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 10px; }
+.muted { color: var(--c-muted); font-size: 12px; }
+.user { align-self: flex-end; background: rgba(122, 162, 247, 0.18); border-radius: 10px 10px 2px 10px; padding: 6px 10px; max-width: 92%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.turn { display: flex; flex-direction: column; gap: 6px; }
+.assistant { white-space: pre-wrap; overflow-wrap: anywhere; }
+.reasoning { color: var(--c-muted); font-size: 12px; white-space: pre-wrap; }
+.reasoning summary { cursor: pointer; }
+.tool { border: 1px solid var(--c-line); border-radius: 6px; background: var(--c-panel); font-size: 12px; }
+.toolHead { display: flex; gap: 6px; width: 100%; background: none; border: none; text-align: left; align-items: baseline; padding: 3px 8px; font: inherit; color: inherit; cursor: pointer; }
+.toolHead code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.toolIcon { width: 1em; }
+.ok .toolIcon { color: var(--c-good); }
+.err .toolIcon { color: var(--c-bad); }
+.run .toolIcon { color: var(--c-warn); }
+.toolSum { color: var(--c-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.err .toolSum { color: var(--c-bad); white-space: normal; }
+.toolBody { margin: 0; padding: 6px 8px; max-height: 260px; overflow: auto; border-top: 1px solid var(--c-line); font-size: 11px; font-family: ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.error { color: var(--c-bad); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.foot { display: flex; gap: 8px; align-items: baseline; color: var(--c-muted); font-size: 11px; }
+.input { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--c-line); }
+.input textarea { flex: 1; resize: none; height: 64px; font: inherit; color: inherit; background: transparent; border: 1px solid var(--c-line); border-radius: 5px; padding: 4px 6px; }
+.button { font: inherit; color: inherit; background: var(--c-panel); border: 1px solid var(--c-line); border-radius: 5px; padding: 3px 12px; cursor: pointer; }
+.button:disabled { opacity: 0.45; cursor: default; }

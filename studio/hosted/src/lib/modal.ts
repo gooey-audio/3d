@@ -79,7 +79,7 @@ export async function renderStatus(callId: string): Promise<RenderStatus> {
 // --- local fallback ------------------------------------------------------------
 
 function gooey3d(): string {
-  return process.env.GOOEY_3D ?? path.resolve(process.cwd(), "../../engine/target/release/gooey-3d");
+  return process.env.GOOEY_3D ?? path.resolve(/*turbopackIgnore: true*/ process.cwd(), "../../engine/target/release/gooey-3d");
 }
 
 function setArgs(params: Record<string, unknown>): string[] {
@@ -90,15 +90,16 @@ async function localBuild(req: { script: string; params: Record<string, unknown>
   const t0 = Date.now();
   const dir = await mkdtemp(path.join(tmpdir(), "studio-build-"));
   try {
-    const file = path.join(dir, path.basename(req.filename).replace(/[^A-Za-z0-9_.-]/g, "-") || "part.js");
+    const file = path.join(/*turbopackIgnore: true*/ dir, path.basename(req.filename).replace(/[^A-Za-z0-9_.-]/g, "-") || "part.js");
     await writeFile(file, req.script);
-    const out = path.join(dir, "out");
+    const out = path.join(/*turbopackIgnore: true*/ dir, "out");
     const stem = path.basename(file, ".js");
     let res: { ok: boolean; report?: Record<string, unknown>; error?: CadError };
     try {
       const { stdout } = await run(gooey3d(), ["cad", "build", file, "--out", out, "--json", ...setArgs(req.params)], { maxBuffer: 64 << 20 });
       res = JSON.parse(stdout);
-    } catch (e: any) {
+    } catch (err) {
+      const e = err as { stdout?: string; message?: string };
       res = e.stdout ? JSON.parse(e.stdout) : { ok: false, error: { kind: "worker", message: String(e.message) } };
     }
     let info: BuildResponse["info"] = null;
@@ -110,15 +111,18 @@ async function localBuild(req: { script: string; params: Record<string, unknown>
     }
     const seconds = (Date.now() - t0) / 1000;
     if (!res.ok) return { ok: false, error: res.error, info, seconds };
-    const stl = await readFile(path.join(out, `${stem}.stl`));
-    const step = req.step ? (await readFile(path.join(out, `${stem}.step`))).toString("base64") : null;
+    const stl = await readFile(path.join(/*turbopackIgnore: true*/ out, `${stem}.stl`));
+    const step = req.step ? (await readFile(path.join(/*turbopackIgnore: true*/ out, `${stem}.step`))).toString("base64") : null;
     return { ok: true, report: res.report, stl_b64: stl.toString("base64"), step_b64: step, info, seconds };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-const localResults = new Map<string, RenderStatus>();
+// On globalThis: in `next dev` each route bundle may get its own copy of this module, and the
+// render submitted by one route is polled by another.
+const localResults: Map<string, RenderStatus> = ((globalThis as { __gooeyLocalRenders?: Map<string, RenderStatus> }).__gooeyLocalRenders ??=
+  new Map());
 
 async function localRender(req: RenderRequest): Promise<{ call_id: string }> {
   const id = `local-${Date.now()}`;
@@ -128,7 +132,7 @@ async function localRender(req: RenderRequest): Promise<{ call_id: string }> {
     const files: string[] = [];
     for (const [i, inp] of req.inputs.entries()) {
       const f = `${inp.name.replace(/[^A-Za-z0-9_.-]/g, "-") || `in${i}`}.stl`;
-      await writeFile(path.join(dir, f), Buffer.from(inp.stl_b64, "base64"));
+      await writeFile(path.join(/*turbopackIgnore: true*/ dir, f), Buffer.from(inp.stl_b64, "base64"));
       files.push(f);
     }
     const a: string[] = [];
@@ -136,7 +140,7 @@ async function localRender(req: RenderRequest): Promise<{ call_id: string }> {
     const view = (v: unknown) => (Array.isArray(v) ? v.join(",") : String(v));
     const mat = (m: unknown) => (typeof m === "string" ? m : JSON.stringify(m));
     if (req.library) {
-      await writeFile(path.join(dir, "library.json"), JSON.stringify(req.library));
+      await writeFile(path.join(/*turbopackIgnore: true*/ dir, "library.json"), JSON.stringify(req.library));
       a.push("--library", "library.json");
     }
     flag("--spp", req.spp);
@@ -160,10 +164,11 @@ async function localRender(req: RenderRequest): Promise<{ call_id: string }> {
       out = "still.png";
       await run(gooey3d(), ["render", "stl", files[0], ...a, "--out", out, "--json"], { cwd: dir, maxBuffer: 64 << 20 });
     }
-    const png = await readFile(path.join(dir, out));
-    const index = req.kind === "sheet" ? JSON.parse(await readFile(path.join(dir, "sheet.json"), "utf8")) : null;
+    const png = await readFile(path.join(/*turbopackIgnore: true*/ dir, out));
+    const index = req.kind === "sheet" ? JSON.parse(await readFile(path.join(/*turbopackIgnore: true*/ dir, "sheet.json"), "utf8")) : null;
     localResults.set(id, { status: "done", png_b64: png.toString("base64"), index, seconds: (Date.now() - t0) / 1000, adapter: "local" });
-  } catch (e: any) {
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
     localResults.set(id, { status: "failed", error: String(e.stderr || e.message).slice(-2000) });
   } finally {
     await rm(dir, { recursive: true, force: true });

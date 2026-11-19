@@ -28,6 +28,11 @@ export async function buildPart(part: string): Promise<BuildSummary> {
     info: res.info ?? prev?.info ?? null,
     at: Date.now(),
   };
+  // Builds take a few seconds and may overlap (autosave, sliders, the agent): a result for a
+  // script or parameters that changed meanwhile must not replace the newer build's mesh.
+  const [nowScript, nowScene] = await Promise.all([store.readScript(part), store.readScene(part)]);
+  const stale = nowScript !== script || JSON.stringify(nowScene.params ?? {}) !== JSON.stringify(overrides);
+  if (stale) return summary;
   if (res.ok && res.stl_b64) await store.writeMesh(part, Buffer.from(res.stl_b64, "base64"));
   await store.writeBuild(part, summary);
   return summary;
@@ -51,6 +56,7 @@ export async function updateScene(part: string, patch: unknown): Promise<{ scene
 /** A compact build result for the agent: key numbers, or the error with its source lines. */
 export function describeBuild(b: BuildSummary, script?: string): Record<string, unknown> {
   if (b.ok && b.report) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- report-v1 JSON, read loosely
     const r = b.report as any;
     return {
       ok: true,
