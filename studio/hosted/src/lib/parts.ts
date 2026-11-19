@@ -4,6 +4,7 @@ import * as modal from "./modal";
 import { patchScene, type Scene } from "./scene";
 import * as store from "./store";
 import type { BuildSummary } from "./store";
+import type { Face } from "./selection";
 
 /** Builds the part's current script with its scene's parameter overrides, on Modal, and
  *  stores the summary (and the mesh when it succeeds). The last good mesh is kept on failure. */
@@ -13,9 +14,11 @@ export async function buildPart(part: string): Promise<BuildSummary> {
   const overrides = scene.params ?? {};
   const res = await modal.build(script, overrides, { filename: `${part}.js` });
   let report: Record<string, unknown> | undefined;
+  let faces: Face[] | undefined;
   if (res.report) {
-    const { faces: _faces, ...rest } = res.report as Record<string, unknown>;
+    const { faces: f, ...rest } = res.report as Record<string, unknown>;
     report = rest;
+    faces = (f as Face[] | undefined) ?? [];
   }
   const summary: BuildSummary = {
     rev: (prev?.rev ?? 0) + 1,
@@ -33,7 +36,10 @@ export async function buildPart(part: string): Promise<BuildSummary> {
   const [nowScript, nowScene] = await Promise.all([store.readScript(part), store.readScene(part)]);
   const stale = nowScript !== script || JSON.stringify(nowScene.params ?? {}) !== JSON.stringify(overrides);
   if (stale) return summary;
-  if (res.ok && res.stl_b64) await store.writeMesh(part, Buffer.from(res.stl_b64, "base64"));
+  if (res.ok && res.stl_b64) {
+    // The face table indexes the mesh's triangles, so the two are written together.
+    await Promise.all([store.writeMesh(part, Buffer.from(res.stl_b64, "base64")), store.writeFaces(part, faces ?? [])]);
+  }
   await store.writeBuild(part, summary);
   return summary;
 }

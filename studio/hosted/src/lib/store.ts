@@ -158,6 +158,15 @@ export async function writeBuild(part: string, b: BuildSummary): Promise<void> {
   await writeJson(partKey(part, "build.json"), b);
 }
 
+/** The last good build's B-rep face table (`report.faces`): triangle ranges of mesh.stl. */
+export async function readFaces(part: string): Promise<import("./selection").Face[]> {
+  return (await readJson<import("./selection").Face[]>(partKey(part, "faces.json"))) ?? [];
+}
+
+export async function writeFaces(part: string, faces: import("./selection").Face[]): Promise<void> {
+  await writeJson(partKey(part, "faces.json"), faces);
+}
+
 export async function readMesh(part: string): Promise<Buffer | null> {
   return readBytes(partKey(part, "mesh.stl"));
 }
