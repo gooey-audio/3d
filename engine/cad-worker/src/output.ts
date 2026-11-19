@@ -5,7 +5,9 @@ import { ScriptError } from "./script.ts";
 
 // A B-rep face and the triangles that tessellate it. `face` is the index in
 // `shape.faces` (TopExp order, stable for a given topology); start/count are
-// in triangles of the written STL.
+// in triangles of the written STL. `type` is a SURFACE_TYPES name; `center` is
+// the face's centre of mass (off the surface for curved faces); `normal` is the
+// outward unit normal at the face's UV mid-point.
 export type FaceGroup = {
   face: number;
   type: string;
@@ -14,6 +16,42 @@ export type FaceGroup = {
   center: number[];
   normal: number[];
 };
+
+// Replicad's (OpenCascade's) surface names -> the face table's `type`.
+export const SURFACE_TYPES: Record<string, string> = {
+  PLANE: "plane",
+  CYLINDRE: "cylinder",
+  CONE: "cone",
+  SPHERE: "sphere",
+  TORUS: "torus",
+  BEZIER_SURFACE: "bezier",
+  BSPLINE_SURFACE: "bspline",
+  REVOLUTION_SURFACE: "revolution",
+  EXTRUSION_SURFACE: "extrusion",
+  OFFSET_SURFACE: "offset",
+  OTHER_SURFACE: "other",
+};
+
+// `normalAt()` is BRepGProp_Face.Normal at the UV mid-point: oriented outward but
+// scaled by the parametrisation (a cylinder's by its radius). Unit length here; if
+// it vanishes there (a degenerate point), evaluate at the centre's projection.
+function unitNormal(face: any, center: any): number[] {
+  for (const at of [undefined, center]) {
+    if (at === null) continue;
+    let n: any;
+    try {
+      n = face.normalAt(at);
+      const [x, y, z] = n.toTuple() as number[];
+      const len = Math.hypot(x, y, z);
+      if (len > 1e-12 && Number.isFinite(len)) return [x / len, y / len, z / len];
+    } catch {
+      // the projection can fail; fall through
+    } finally {
+      n?.delete();
+    }
+  }
+  return [0, 0, 0];
+}
 
 export type Limits = { faces: number; triangles: number };
 export const DEFAULT_LIMITS: Limits = { faces: 2000, triangles: 2_000_000 };
@@ -105,17 +143,15 @@ export function writeMesh(shape: any, path: string, tolerance: number, angularTo
   const faces: FaceGroup[] = faceGroups.map((g: any) => {
     const hit = byHash.get(g.faceId);
     const center = hit?.face.center;
-    const normal = hit?.face.normalAt();
     const group = {
       face: hit ? hit.index : -1,
-      type: hit ? hit.face.geomType : "UNKNOWN",
+      type: hit ? (SURFACE_TYPES[hit.face.geomType] ?? "other") : "other",
       start: g.start / 3,
       count: g.count / 3,
       center: center ? round(center.toTuple()) : [],
-      normal: normal ? round(normal.toTuple()) : [],
+      normal: hit ? round(unitNormal(hit.face, center ?? null)) : [],
     };
     center?.delete();
-    normal?.delete();
     return group;
   });
   for (const { face } of byHash.values()) face.delete();

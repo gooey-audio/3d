@@ -17,9 +17,12 @@ Binary payloads are base64 strings (`*_b64`).
 { "script": "<source of part.js>", "params": {"length": 140}, "filename": "brace.js", "step": false }
 ```
 
-The endpoint writes the script to a temp dir and runs
-`gooey-3d cad build <file> --out <dir> --json [--set k=v ...]`, then
-`gooey-3d cad params <file> --json` (also when the build fails, if the script loads).
+The endpoint writes the script to a temp dir and sends a `build` and a `params` request to one
+of the container's warm `gooey-3d cad serve` processes (the same results as
+`gooey-3d cad build --json` and `cad params --json`; `info` is null only if the script does
+not load). `report.faces[]` carries unit normals and lowercase surface types (`plane`,
+`cylinder`, `cone`, `sphere`, `torus`, `bezier`, `bspline`, `revolution`, `extrusion`,
+`offset`, `other`).
 Response, always HTTP 200 unless auth or the request is malformed:
 
 ```json

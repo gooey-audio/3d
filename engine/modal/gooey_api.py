@@ -20,9 +20,11 @@ import hmac
 import json
 import os
 import pathlib
+import queue
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 import modal
@@ -36,7 +38,7 @@ APP = "gooey-3d-api"
 SECRET = "gooey-3d-api"
 BUN_VERSION = "1.3.13"
 
-BUILD_TIMEOUT_S = 45     # gooey-3d's own wall-clock limit (kills the worker -> kind "timeout")
+BUILD_TIMEOUT_S = 45     # cad serve's own wall-clock limit (kills the worker -> kind "timeout")
 PARAMS_TIMEOUT_S = 20
 WEB_SCALEDOWN_S = 300    # keep the editor's container warm between edits
 GPU_SCALEDOWN_S = 60     # a follow-up render within a minute skips the GPU cold start
@@ -135,67 +137,150 @@ def parse_json(s: str):
 
 
 # --- build (inline, CPU) -----------------------------------------------------------------
+#
+# Each web container keeps SERVE_SLOTS `gooey-3d cad serve` processes, one per concurrent
+# request slot (@modal.concurrent max_inputs). Each holds a warm cad-worker (Bun +
+# OpenCascade), so a build skips process start-up and OpenCascade init; `cad serve`
+# replaces its worker after a timeout, trap or crash, or past its job / heap limits.
 
-def run_build(script: str, params: dict, filename: str, step: bool) -> dict:
+SERVE_SLOTS = 4
+SERVE_MAX_HEAP_MB = 1024  # per worker; 4 of them fit the container's 6 GiB with room
+SLACK_S = 15              # past gooey-3d's own limit: cad serve itself is stuck
+
+
+class CadServer:
+    """One `gooey-3d cad serve` process; one caller at a time (the pool hands it out)."""
+
+    def __init__(self):
+        self.proc = None
+        self.lines = None
+        self.next_id = 0
+        self.start()
+
+    def start(self):
+        # stderr (scripts' console, worker crash tails) goes to the container log.
+        self.proc = subprocess.Popen(
+            [BIN, "cad", "serve", "--timeout", str(BUILD_TIMEOUT_S),
+             "--max-heap-mb", str(SERVE_MAX_HEAP_MB)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        self.lines = queue.Queue()
+        threading.Thread(target=self._read, args=(self.proc, self.lines), daemon=True).start()
+
+    @staticmethod
+    def _read(proc, lines):
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    def restart(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.kill()
+        if self.proc:
+            self.proc.wait()
+        self.start()
+
+    def send(self, req: dict):
+        """Writes a request; returns its id."""
+        if self.proc.poll() is not None:
+            self.restart()
+        self.next_id += 1
+        self.proc.stdin.write(json.dumps({**req, "id": self.next_id}) + "\n")
+        self.proc.stdin.flush()
+        return self.next_id
+
+    def recv(self, rid: int, timeout: float) -> dict:
+        """The response to request `rid`, or a contract error (after which the process is
+        restarted) if it doesn't come within `timeout` s or the process dies."""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                line = self.lines.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                self.restart()
+                return {"ok": False, "error": {"kind": "timeout", "line": None, "column": None,
+                                               "message": f"build exceeded {timeout:g} s"}}
+            if line is None:
+                code = self.proc.wait()
+                self.restart()
+                return {"ok": False, "error": {"kind": "crash", "line": None, "column": None,
+                                               "message": f"gooey-3d cad serve exited {code}"}}
+            msg = parse_json(line)
+            if isinstance(msg, dict) and msg.get("id") == rid:
+                return msg
+            # the `ready` line, or the answer to a request abandoned after an error
+
+
+def exchange(server: CadServer, build_req: dict, params_req: dict):
+    """(build response, info, lost): `lost` when the serve process was dead or died."""
+    try:
+        # Both at once; cad serve answers in order. `params` only loads the script, so it
+        # answers (info) when the build fails, unless the script doesn't load.
+        b = server.send(build_req)
+        q = server.send(params_req)
+    except OSError as e:  # the process died under us
+        server.restart()
+        return ({"ok": False, "error": {"kind": "crash", "line": None, "column": None,
+                                        "message": f"gooey-3d cad serve: {e}"}}, None, True)
+    proc = server.proc
+    res = server.recv(b, BUILD_TIMEOUT_S + SLACK_S)
+    if server.proc is not proc:  # restarted, which drops the queued params request
+        return res, None, res["error"]["kind"] == "crash"
+    j = server.recv(q, PARAMS_TIMEOUT_S + SLACK_S)
+    info = None
+    if j.get("ok") and "defaultParams" in j:
+        info = {"defaultParams": j.get("defaultParams") or {},
+                "paramRanges": j.get("paramRanges") or {}}
+    return res, info, False
+
+
+def new_pool() -> "queue.LifoQueue[CadServer]":
+    # LIFO: sequential builds (one editing session) reuse the most recently used server,
+    # whose worker's JIT is hottest (a fresh worker's first brace eval is ~2x slower).
+    pool = queue.LifoQueue()
+    for _ in range(SERVE_SLOTS):
+        pool.put(CadServer())
+    return pool
+
+
+def run_build(pool, script: str, params: dict, filename: str, step: bool) -> dict:
     t0 = time.time()
     work = pathlib.Path(tempfile.mkdtemp(prefix="build-", dir="/tmp"))
+    server = pool.get()
     try:
         name = safe_stem(filename, "part.js")
         if not name.endswith(".js"):
             name += ".js"
         src = work / name
         src.write_text(script)
-        out = work / "out"
-        sets = [x for k, v in params.items() for x in ("--set", f"{k}={arg(v)}")]
-        # Relative paths (cwd = work) keep the temp dir out of error messages. `cad params`
-        # runs alongside the build (its own worker process): it only reads the script.
-        q = subprocess.Popen([BIN, "cad", "params", name, "--json"], cwd=work, text=True,
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        cmd = [BIN, "cad", "build", name, "--out", "out", "--json",
-               "--timeout", str(BUILD_TIMEOUT_S), *sets]
-        try:
-            p = subprocess.run(cmd, cwd=work, capture_output=True, text=True,
-                               timeout=BUILD_TIMEOUT_S + 15)
-            res = parse_json(p.stdout)
-            if not isinstance(res, dict) or "ok" not in res:
-                res = {"ok": False, "error": {
-                    "kind": "crash", "line": None, "column": None,
-                    "message": f"gooey-3d cad build exited {p.returncode}: {tail(p.stderr)}"}}
-        except subprocess.TimeoutExpired:
-            res = {"ok": False, "error": {
-                "kind": "timeout", "line": None, "column": None,
-                "message": f"build exceeded {BUILD_TIMEOUT_S + 15} s"}}
-
-        info = None
-        try:
-            qout, _ = q.communicate(timeout=PARAMS_TIMEOUT_S)
-            j = parse_json(qout) if q.returncode == 0 else None
-            if isinstance(j, dict) and "defaultParams" in j:
-                info = {"defaultParams": j.get("defaultParams") or {},
-                        "paramRanges": j.get("paramRanges") or {}}
-        except subprocess.TimeoutExpired:
-            q.kill()
-            q.communicate()
-
+        # Strings, as `--set k=v` sent them: the worker reads each as its default's type.
+        sets = {k: arg(v) for k, v in params.items()}
+        build_req = {"op": "build", "script": str(src), "params": sets,
+                     "out": str(work / "out"), "step": step}
+        params_req = {"op": "params", "script": str(src), "timeout": PARAMS_TIMEOUT_S}
+        # A second try only when the serve process itself was gone (it outlives worker
+        # crashes and timeouts, which come back as errors): a script can't cause that.
+        for _ in range(2):
+            res, info, lost = exchange(server, build_req, params_req)
+            if not lost:
+                break
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error"), "info": info,
                     "seconds": round(time.time() - t0, 3)}
 
         outputs = res.get("outputs") or {}
-        stl = work / (outputs.get("stl") or out / (src.stem + ".stl"))
-        step_path = work / (outputs.get("step") or out / (src.stem + ".step"))
-        report_path = work / (outputs.get("report") or out / "report.json")
-        report = parse_json(report_path.read_text()) if report_path.exists() else None
+        stl = pathlib.Path(outputs["stl"])
+        step_path = pathlib.Path(outputs["step"]) if outputs.get("step") else None
         return {
             "ok": True,
-            "report": report if isinstance(report, dict) else res.get("report"),
+            "report": res.get("report"),
             "stl_b64": base64.b64encode(stl.read_bytes()).decode(),
             "step_b64": (base64.b64encode(step_path.read_bytes()).decode()
-                         if step and step_path.exists() else None),
+                         if step and step_path and step_path.exists() else None),
             "info": info,
             "seconds": round(time.time() - t0, 3),
         }
     finally:
+        pool.put(server)
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -336,12 +421,15 @@ def validate_render(req) -> str | None:
 
 @app.function(cpu=4, memory=6144, scaledown_window=WEB_SCALEDOWN_S, timeout=300,
               secrets=[modal.Secret.from_name(SECRET)])
-@modal.concurrent(max_inputs=4)
+@modal.concurrent(max_inputs=SERVE_SLOTS)
 @modal.asgi_app()
 def web():
     from fastapi import FastAPI, Request
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import JSONResponse
+
+    # Started now: the workers warm up while the container finishes starting.
+    pool = new_pool()
 
     token = os.environ.get("STUDIO_MODAL_TOKEN", "").strip().encode()
     api = FastAPI(title=APP, docs_url=None, redoc_url=None, openapi_url=None)
@@ -371,7 +459,7 @@ def web():
         filename = req.get("filename") or "part.js"
         if not isinstance(filename, str):
             return JSONResponse({"error": "filename must be a string"}, status_code=400)
-        return await run_in_threadpool(run_build, req["script"], params, filename,
+        return await run_in_threadpool(run_build, pool, req["script"], params, filename,
                                        bool(req.get("step")))
 
     @api.post("/render")

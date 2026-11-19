@@ -1,7 +1,7 @@
 //! gooey-3d: casting moulds, Replicad part builds and path-traced renders from one CLI.
 //!
 //!   gooey-3d mould build|check ...    casting moulds (castkit-core)
-//!   gooey-3d cad build|check|params ...  Replicad part scripts (gooey-cad + cad-worker)
+//!   gooey-3d cad build|check|params|serve ...  Replicad part scripts (gooey-cad + cad-worker)
 //!   gooey-3d render stl|sheet|plan|tiles|compose|scene|sync|check|info|bounds|materials ...
 //!   gooey-3d --version
 
@@ -18,7 +18,7 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 usage: gooey-3d <command> ...
   mould    casting moulds from a JSON spec: build, check  (gooey-3d mould --help)
-  cad      Replicad part scripts to validated STL + STEP: build, check, params  (gooey-3d cad --help)
+  cad      Replicad part scripts to validated STL + STEP: build, check, params, serve  (gooey-3d cad --help)
   render   path-traced images of STLs, manifests and scenes  (gooey-3d render --help)
   --version";
 

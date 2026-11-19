@@ -8,7 +8,8 @@
 //! pieces, the script's `expect`, and printability.
 //!
 //! [`build`] spawns a worker per call (the CLI). Pools keep a [`Worker`] and
-//! call [`build_with`], recycling on [`Worker::jobs`] / [`Worker::heap_mb`].
+//! call [`build_on`] / [`build_with`], recycling on [`Worker::jobs`] /
+//! [`Worker::heap_mb`] (as `gooey-3d cad serve` does).
 
 pub mod error;
 pub mod scratch;
@@ -69,7 +70,10 @@ impl Default for Options {
 }
 
 /// One B-rep face and its triangles in the STL (`start..start+count`).
-/// `face` indexes `shape.faces` (stable only for a fixed topology).
+/// `face` indexes `shape.faces` (stable only for a fixed topology). `type` is
+/// `plane cylinder cone sphere torus bezier bspline revolution extrusion offset
+/// other`; `center` is the centre of mass, `normal` the outward unit normal at
+/// the face's UV mid-point.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Face {
     pub face: i64,
@@ -145,14 +149,21 @@ pub struct Written {
 
 /// `defaultParams` and `paramRanges` of a script (spawns a worker).
 pub fn params(script: &Path, opts: &Options) -> Result<Value, CadError> {
+    let mut w = spawn(opts).map_err(|e| e.in_file(&display_name(script)))?;
+    let res = params_with(&mut w, script, opts.timeout);
+    w.shutdown();
+    res
+}
+
+/// `{defaultParams, paramRanges}` of a script, on an existing worker. Only loads
+/// the script, so it answers when `main` would fail.
+pub fn params_with(w: &mut Worker, script: &Path, timeout: Duration) -> Result<Value, CadError> {
     let file = display_name(script);
     let abs = script_path(script).map_err(|e| e.in_file(&file))?;
-    let mut w = spawn(opts)?;
     let mut req = Map::new();
     req.insert("op".into(), "params".into());
     req.insert("script".into(), abs.to_string_lossy().into_owned().into());
-    let res = w.request(req, opts.timeout).map_err(|e| e.in_file(&file))?;
-    w.shutdown();
+    let res = w.request(req, timeout).map_err(|e| e.in_file(&file))?;
     Ok(json!({
         "defaultParams": res.get("defaultParams").cloned().unwrap_or(json!({})),
         "paramRanges": res.get("paramRanges").cloned().unwrap_or(json!({})),
@@ -163,8 +174,23 @@ pub fn params(script: &Path, opts: &Options) -> Result<Value, CadError> {
 /// `out/<stem>.stl`, `.step` and `report.json`, each renamed into place from
 /// a staging directory once the whole build has passed; without, nothing is kept.
 pub fn build(script: &Path, opts: &Options, out: Option<&Path>) -> Result<(Report, Option<Written>), CadError> {
-    let start = Instant::now();
     let mut w = spawn(opts).map_err(|e| e.in_file(&display_name(script)))?;
+    let res = build_on(&mut w, script, opts, out);
+    w.shutdown();
+    res
+}
+
+/// [`build`] on an existing worker (`cad serve`, pools): the same staging and
+/// outputs. `seconds.total` counts the worker's start-up only on its first job.
+/// After a timeout, trap or crash the worker is dead ([`Worker::usable`]).
+pub fn build_on(
+    w: &mut Worker,
+    script: &Path,
+    opts: &Options,
+    out: Option<&Path>,
+) -> Result<(Report, Option<Written>), CadError> {
+    let start = Instant::now();
+    let spawn_secs = if w.jobs == 0 { w.startup_seconds } else { 0.0 };
     // Staged inside `out` so the final renames stay on one filesystem.
     let created = out.filter(|d| !d.exists());
     let staging = match out {
@@ -174,7 +200,7 @@ pub fn build(script: &Path, opts: &Options, out: Option<&Path>) -> Result<(Repor
         }
         None => TempDir::new_in(&std::env::temp_dir(), "gooey-cad-check-")?,
     };
-    let mut report = match build_with(&mut w, script, opts, staging.path()) {
+    let mut report = match build_with(w, script, opts, staging.path()) {
         Ok(r) => r,
         Err(e) => {
             drop(staging);
@@ -184,10 +210,9 @@ pub fn build(script: &Path, opts: &Options, out: Option<&Path>) -> Result<(Repor
             return Err(e);
         }
     };
-    w.shutdown();
     report
         .seconds
-        .insert("total".into(), secs(start.elapsed().as_secs_f64()));
+        .insert("total".into(), secs(spawn_secs + start.elapsed().as_secs_f64()));
     let written = match out {
         Some(dir) => Some(persist(&report, staging.path(), dir)?),
         None => None,
@@ -197,8 +222,10 @@ pub fn build(script: &Path, opts: &Options, out: Option<&Path>) -> Result<(Repor
 
 /// Builds and validates `script` on an existing worker, writing the mesh (and
 /// STEP) into `dir`. The caller decides what to keep. After a timeout, trap or
-/// crash the worker is dead ([`Worker::usable`]).
+/// crash the worker is dead ([`Worker::usable`]). `seconds.spawn` is the
+/// worker's start-up on its first job, else 0.
 pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> Result<Report, CadError> {
+    let fresh = w.jobs == 0;
     let file = display_name(script);
     let fail = |e: CadError| e.in_file(&file);
     let abs = script_path(script).map_err(fail)?;
@@ -272,7 +299,7 @@ pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> 
         serde_json::from_value(res.get("tolerance").cloned().ok_or_else(|| proto("`tolerance`"))?)
             .map_err(|_| proto("a well-formed `tolerance`"))?;
     let mut seconds = Map::new();
-    seconds.insert("spawn".into(), secs(w.startup_seconds));
+    seconds.insert("spawn".into(), secs(if fresh { w.startup_seconds } else { 0.0 }));
     if let Some(Value::Object(ms)) = res.get("ms") {
         for k in ["load", "eval", "check", "mesh", "step"] {
             if let Some(x) = ms.get(k).and_then(Value::as_f64) {

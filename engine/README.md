@@ -23,7 +23,7 @@ crates/castkit-core   mould geometry, checker, request/response types (no file I
 crates/castkit-wasm   the same request/response for Node (wasm32-unknown-unknown)
 crates/render         gooey-render: path tracer, scenes, manifests, finish libraries, sheets
 crates/cad            gooey-cad: runs the cad-worker, validates its output with castkit
-crates/gooey-3d       the `gooey-3d` CLI: `mould build|check`, `cad build|check|params`, `render stl|sheet|plan|tiles|compose|scene|...`
+crates/gooey-3d       the `gooey-3d` CLI: `mould build|check`, `cad build|check|params|serve`, `render stl|sheet|plan|tiles|compose|scene|...`
 cad-worker/           gooey-cad-worker: Replicad + OpenCascade WASM in a Bun executable (TypeScript)
 fixtures/             synthetic parts and reports (castkit), fixtures/cad (part scripts), fixtures/render (renderer)
 skill/cast-moulds/    agent skill: choosing, building, checking and printing moulds
@@ -126,8 +126,13 @@ What a build checks:
   triangles (right after tessellation). Mesh tolerance is
   max(0.01 mm, 2e-5 × bounding-box diagonal); `--tolerance` overrides it.
 
-`report.json` also holds the face table: for each B-rep face, its surface type,
-centre, normal and the STL triangle range that tessellates it. It also has the
+`report.json` also holds the face table (`faces`): for each B-rep face, its index
+in `shape.faces` (`face`, stable only for a fixed topology), its surface `type`
+(`plane`, `cylinder`, `cone`, `sphere`, `torus`, `bezier`, `bspline`, `revolution`,
+`extrusion`, `offset` or `other`; Replicad's finders still take OpenCascade's names,
+such as `ofSurfaceType("CYLINDRE")`), its `center` (centre of mass, which lies off
+the surface for curved faces), its outward unit `normal` at the face's UV mid-point,
+and the STL triangle range (`start`, `count`) that tessellates it. It also has the
 worker and kernel versions and the seconds spent in each stage. Outputs are staged
 and renamed into place only when everything passes; a failed build writes nothing.
 
@@ -146,13 +151,39 @@ gooey-3d: cad: brace.js:64:36: kernel error: OpenCascade StdFail_NotDone: BRep_A
 | 4 | `worker` missing or unstartable, `crash`, or `trap` |
 
 `--json` prints `{"ok": true, "outputs": {...}, "report": {...}}`, or
-`{"ok": false, "error": {...}}`, on stdout.
+`{"ok": false, "error": {...}}`, on stdout. A script with several parse errors
+reports the first one's line and column, and lists them all in `message` as
+`part.js:LINE:COL: ...`.
+
+**Serving builds.** `gooey-3d cad serve` keeps one warm worker and answers
+JSON-lines requests on stdin with one JSON line each on stdout, in order, so
+callers (the hosted studio's Modal service) skip worker start-up and OpenCascade
+init on every build:
+
+```sh
+$ gooey-3d cad serve
+{"ready":true,"protocol":1,"startup_seconds":0.107,"version":"0.1.0","versions":{...}}
+{"id":1,"op":"build","script":"brace.js","params":{"length":140},"out":"out/b140","step":false}
+{"id":1,"ok":true,"outputs":{"stl":"out/b140/brace.stl","step":null,"report":"out/b140/report.json"},"report":{...}}
+{"id":2,"op":"params","script":"brace.js"}
+{"id":2,"ok":true,"defaultParams":{...},"paramRanges":{...}}
+```
+
+A build answers what `cad build --json` prints (no `out`: validate only, like
+`cad check`), plus the request's `id`. Only `op` and `script` are required; `step`
+defaults to true, `allow_out_of_range` to false, and `timeout` (s), `tolerance`,
+`material` and `bed` mirror the flags. Malformed requests get `kind: "protocol"`.
+The worker is replaced (between requests, so the next one finds it warm) after a
+timeout, trap or crash, and after `--max-jobs` jobs (300) or `--max-heap-mb` MB of
+OpenCascade heap (2048), since that heap never shrinks. `--timeout` sets the
+default per-request limit (30 s). EOF on stdin ends it. `seconds.spawn` in a
+served report is 0 unless the request waited for a worker to start.
 
 **The worker.** `gooey-cad-worker` is a Bun single-file executable with Replicad,
 OpenCascade (WASM) and Manifold (WASM) embedded. It needs no Node and no
 node_modules. `gooey-3d` runs `$GOOEY_CAD_WORKER` if set (a path, or a command
 such as `node cad-worker/src/worker.ts`), else `gooey-cad-worker` next to its own
-executable. Each command starts one worker and kills it on timeout (start-up 10 s).
+executable. Each command (or `cad serve`) starts one worker and kills it on timeout (start-up 10 s).
 A worker is never reused after a timeout or trap. It talks JSON lines on stdio;
 the protocol is documented in [`cad-worker/src/worker.ts`](cad-worker/src/worker.ts).
 
@@ -164,7 +195,7 @@ cp cad-worker/dist/gooey-cad-worker target/release/   # or: export GOOEY_CAD_WOR
 ```
 
 A brace builds in about 0.9 s from a cold start (0.1 s of that is worker start-up)
-on an M4 Pro.
+on an M4 Pro, and in about 0.5 to 0.8 s on a warm `cad serve` worker.
 
 ## Renders
 

@@ -173,7 +173,8 @@ seams of holes once they exist. Fillet before drilling, or narrow the finder.
    the frame.
 3. Run `gooey-3d cad check part.js`. Fix errors at the reported line.
 4. Run `gooey-3d cad build part.js --out DIR`. Check `report.json`: `genus`,
-   `pieces`, `volume_mm3`, `bounds`, and the `faces` table (surface type and centre
-   per face) to confirm features moved where you meant.
+   `pieces`, `volume_mm3`, `bounds`, and the `faces` table (per face: `type` such as `plane`,
+   `cylinder` or `extrusion`, `center` and unit `normal`) to confirm features moved
+   where you meant.
 5. Run `gooey-3d render stl DIR/part.stl --out .context/part.png` and **look at
    it** before you report.

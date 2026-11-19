@@ -4,7 +4,7 @@ import "server-only";
 import { tool, type JSONValue, type ToolResultPart, type ToolSet } from "ai";
 import { z } from "zod";
 import { unifiedDiff } from "./agent-diff";
-import type { LookResult, ScriptDiff } from "./agent-shared";
+import { surfaceLabel, type LookResult, type ScriptDiff } from "./agent-shared";
 import { buildPart, describeBuild, saveAndBuild, updateScene } from "./parts";
 import { refresh, startPartSheet, startRender } from "./renders";
 import { CAD_SKILL } from "./prompts/cad-skill";
@@ -66,8 +66,8 @@ asks for a render.
 Selected faces:
 - The user can click faces in the viewer. Then the turn's <studio-context> has a "Selected \
 faces" list, and words like "this face", "these", "here" or "the edges of this" refer to it. Each \
-entry has the B-rep face number, its Replicad surface type (PLANE, CYLINDRE, EXTRUSION_SURFACE, \
-...), its centre and normal, and the clicked point. All are in part coordinates, the frame of the \
+entry has the B-rep face number, its surface type (plane, cylinder, cone, sphere, torus, bspline, \
+revolution, extrusion, ...), its centre and unit normal, and the clicked point. All are in part coordinates, the frame of the \
 script (mm, Z up).
 - Face numbers belong to one build and change when the topology changes. Never write them into \
 the script. Target the geometry with finders built from the centre, normal and point:
@@ -75,7 +75,8 @@ the script. Target the geometry with finders built from the centre, normal and p
   - normal ±X at x = a: \`inPlane("YZ", a)\`; normal ±Y at y = b: \`inPlane("XZ", [0, b, 0])\` \
 (see the "XZ" sign note below);
   - any face: \`f.near(centre, 0.3)\` or \`f.containsPoint(point)\` (planar faces), \
-\`f.ofSurfaceType("CYLINDRE")\`, \`f.atAngleWith("Z", 0)\`; edges of a face: \`inList(face.edges)\` \
+\`f.ofSurfaceType("CYLINDRE")\` (scripts use Replicad's names: PLANE, CYLINDRE, CONE, SPHERE, \
+TORUS, BSPLINE_SURFACE, ...), \`f.atAngleWith("Z", 0)\`; edges of a face: \`inList(face.edges)\` \
 (below); edges near a point: \`e.near(point, tol)\`, \`e.atDistance(d, point)\`, \
 \`e.withinDistance(d, point)\`; combine with \`either\`, \`not\` and chaining (AND).
 - Write finder points in terms of the parameters (e.g. \`[halfL - p.inset, 0, p.height]\`), not as \
@@ -254,7 +255,7 @@ export function agentTools(part: string, opts: { vision?: boolean } = {}) {
     }),
     get_faces: tool({
       description:
-        "The B-rep face table of the last good build: face number, Replicad surface type, centre and unit normal (part coordinates, mm). Filter by `type` (e.g. PLANE, CYLINDRE, EXTRUSION_SURFACE), by `near` a point (sorted by centre distance, optionally `within` mm) and by `facing` a direction (normal within 10°). Face numbers change with the topology: use them to understand the part, not in the script.",
+        "The B-rep face table of the last good build: face number, surface type, centre and unit normal (part coordinates, mm). Filter by `type` (plane, cylinder, cone, sphere, torus, bspline, revolution, extrusion, offset; Replicad's names such as CYLINDRE also work), by `near` a point (sorted by centre distance, optionally `within` mm) and by `facing` a direction (normal within 10°). Face numbers change with the topology: use them to understand the part, not in the script.",
       inputSchema: z.object({
         type: z.string().optional(),
         near: point.optional(),
@@ -267,7 +268,7 @@ export function agentTools(part: string, opts: { vision?: boolean } = {}) {
           const [faces, build] = await Promise.all([store.readFaces(part), store.readBuild(part)]);
           if (!faces.length) return fail("no face table yet: the part has no good build");
           let rows: (Face & { distance?: number })[] = faces;
-          if (type) rows = rows.filter((f) => f.type.toUpperCase() === type.toUpperCase());
+          if (type) rows = rows.filter((f) => surfaceLabel(f.type) === surfaceLabel(type));
           if (facing) {
             const d = unit(facing);
             rows = rows.filter((f) => {

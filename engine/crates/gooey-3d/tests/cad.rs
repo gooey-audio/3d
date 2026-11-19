@@ -192,3 +192,84 @@ fn usage_errors_exit_2() {
     let o = gooey(&["check", &brace(), "--frobnicate"], "/nonexistent");
     assert_eq!(code(&o), 2);
 }
+
+#[test]
+fn serve_answers_in_order_and_survives_a_timeout() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let Some(cli) = setup() else { return };
+    let out = out_dir("serve");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gooey-3d"))
+        .args(["cad", "serve", "--timeout", "20"])
+        .env("GOOEY_CAD_WORKER", &cli.worker)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut next = || -> Value { serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap() };
+    let ready = next();
+    assert_eq!(ready["ready"], true, "{ready}");
+    assert_eq!(ready["protocol"], 1);
+
+    let boxes = script("two-boxes.js");
+    let reqs = [
+        serde_json::json!({"id": 1, "op": "build", "script": boxes, "params": {"count": 3},
+                           "out": out, "step": false}),
+        serde_json::json!({"id": "p", "op": "params", "script": boxes}),
+        serde_json::json!({"id": 3, "op": "build", "script": script("hang.js"), "timeout": 1}),
+        serde_json::json!({"id": 4, "op": "build", "script": boxes, "params": {"nope": 1}}),
+        serde_json::json!({"id": 5, "op": "build", "script": boxes}),
+    ];
+    // All at once: responses come back one per request, in order.
+    for r in &reqs {
+        writeln!(stdin, "{r}").unwrap();
+    }
+    writeln!(stdin, "not json").unwrap();
+    stdin.flush().unwrap();
+
+    let b = next();
+    assert_eq!((b["id"].as_u64(), b["ok"].as_bool()), (Some(1), Some(true)), "{b}");
+    assert_eq!(b["report"]["pieces"], 3);
+    assert_eq!(b["report"]["seconds"]["spawn"], 0.0, "the worker was warm");
+    assert_eq!(b["outputs"]["step"], Value::Null);
+    let file: Value = serde_json::from_slice(&std::fs::read(out.join("report.json")).unwrap()).unwrap();
+    assert_eq!(file, b["report"]);
+    assert!(out.join("two-boxes.stl").is_file());
+
+    let p = next();
+    assert_eq!((p["id"].as_str(), p["ok"].as_bool()), (Some("p"), Some(true)), "{p}");
+    assert_eq!(p["paramRanges"]["count"], serde_json::json!([1, 3]));
+
+    let t = Instant::now();
+    let h = next();
+    assert_eq!(
+        (h["id"].as_u64(), h["error"]["kind"].as_str()),
+        (Some(3), Some("timeout")),
+        "{h}"
+    );
+    assert!(t.elapsed() < Duration::from_secs(10));
+    let e = next();
+    assert_eq!(
+        (e["id"].as_u64(), e["error"]["kind"].as_str()),
+        (Some(4), Some("params")),
+        "{e}"
+    );
+    // The killed worker was replaced.
+    let b = next();
+    assert_eq!((b["id"].as_u64(), b["ok"].as_bool()), (Some(5), Some(true)), "{b}");
+    assert_eq!(
+        (b["report"]["pieces"].as_u64(), b["outputs"].clone()),
+        (Some(2), Value::Null)
+    );
+    let bad = next();
+    assert_eq!(
+        (bad["id"].clone(), bad["error"]["kind"].as_str()),
+        (Value::Null, Some("protocol"))
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success(), "EOF on stdin exits 0");
+}

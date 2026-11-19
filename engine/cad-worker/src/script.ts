@@ -246,6 +246,15 @@ export function describeError(err: unknown, oc: any, loaded?: Prepared): ErrorIn
     const { line, column } = (err as any).position; // both 1-based
     const message = `SyntaxError: ${(err as any).message}`;
     info = { kind: "syntax", message, line, column, stack: `${message}\n    at ${loaded?.tempPath}:${line}:${column}` };
+  } else if (buildMessages(err).length) {
+    // Several parse errors: an AggregateError ("N errors building PATH") of
+    // BuildMessages. Point at the first, list them all as `file:line:col: ...`.
+    const msgs = buildMessages(err);
+    const { line, column } = msgs[0].position;
+    const name = loaded ? basename(loaded.scriptPath) : "script";
+    const list = msgs.map((m) => `${name}:${m.position.line}:${m.position.column}: ${m.message}`);
+    const message = `SyntaxError: ${msgs[0].message}${msgs.length > 1 ? ` (${msgs.length} errors)\n${list.join("\n")}` : ""}`;
+    info = { kind: "syntax", message, line, column, stack: `${message}\n    at ${loaded?.tempPath}:${line}:${column}` };
   } else if (err instanceof Error) {
     const kind = err.name === "SyntaxError" ? "syntax" : ((err as ScriptError).kind ?? "script");
     info = { kind, message: err.name === "SyntaxError" ? `SyntaxError: ${err.message}` : err.message, stack: err.stack };
@@ -255,11 +264,17 @@ export function describeError(err: unknown, oc: any, loaded?: Prepared): ErrorIn
     info = { kind: "script", message: `non-Error thrown: ${String(err)}` };
   }
   if (loaded) {
-    const swap = (s: string) =>
-      s.split(pathToFileURL(loaded.tempPath).href).join(loaded.scriptPath).split(loaded.tempPath).join(loaded.scriptPath);
-    info.message = swap(info.message);
+    const swap = (s: string, to: string) =>
+      [pathToFileURL(loaded.tempPath).href, loaded.tempPath].reduce((acc, from) => acc.split(from).join(to), s);
+    // Messages name the script by its file name: the host's directories (often
+    // temp dirs) are noise. Stacks keep full paths (`locate` reads them).
+    const name = basename(loaded.scriptPath);
+    info.message = [pathToFileURL(loaded.scriptPath).href, loaded.scriptPath].reduce(
+      (acc, from) => acc.split(from).join(name),
+      swap(info.message, name),
+    );
     if (info.stack) {
-      info.stack = swap(info.stack);
+      info.stack = swap(info.stack, loaded.scriptPath);
       if (info.line === undefined) {
         const where = locate(info.stack, loaded.scriptPath);
         if (where) Object.assign(info, where);
@@ -271,6 +286,14 @@ export function describeError(err: unknown, oc: any, loaded?: Prepared): ErrorIn
 
 function isBuildMessage(err: unknown): boolean {
   return !!err && typeof err === "object" && (err as any).name === "BuildMessage" && !!(err as any).position;
+}
+
+type BuildMessage = { message: string; position: { line: number; column: number } };
+
+// The BuildMessages of an AggregateError (Bun, a script with several parse errors).
+function buildMessages(err: unknown): BuildMessage[] {
+  const errors = err instanceof AggregateError || (err as any)?.name === "AggregateError" ? (err as any).errors : null;
+  return Array.isArray(errors) ? (errors.filter(isBuildMessage) as BuildMessage[]) : [];
 }
 
 // First stack frame (or SyntaxError header) that points into the user's script.

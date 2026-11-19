@@ -11,7 +11,7 @@
 //        -> {"id", "ok":true, "params":{merged}, "valid":bool, "expect":{pieces,genus}|null,
 //            "mesh", "step", "triangles", "faceCount", "bounds":{min,max},
 //            "tolerance":{"linear","angular"}, "faces":[{face,type,start,count,center,normal}],
-//            "ms":{load,eval,check,mesh,step,total}, "jobs", "heapMB", "rssMB"}
+//            "ms":{load,eval,check,mesh,step,total}, "jobs", "heapMB", "rssMB"|null}
 //   params: {"id", "op":"params", "script"}
 //        -> {"id", "ok":true, "defaultParams":{...}, "paramRanges":{...}}
 //   errors: {"id", "ok":false, "error":{kind, message, line?, column?, stack?}}
@@ -146,6 +146,17 @@ function isValidSolid(oc: any, shape: any): boolean {
   }
 }
 
+// `process.memoryUsage()` can throw "SystemError: Failed to get memory usage"
+// (EINTR) on Linux; retry once, else report null rather than die.
+function rssMB(): number | null {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return Math.round(process.memoryUsage().rss / 2 ** 20);
+    } catch {}
+  }
+  return null;
+}
+
 let jobs = 0;
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 for await (const line of lines) {
@@ -164,7 +175,7 @@ for await (const line of lines) {
     ...res,
     jobs,
     heapMB: Math.round(rt.oc.wasmMemory.buffer.byteLength / 2 ** 20),
-    rssMB: Math.round(process.memoryUsage().rss / 2 ** 20),
+    rssMB: rssMB(),
   });
   if (!res.ok && res.error?.kind === "trap") process.exit(3);
 }
