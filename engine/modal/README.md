@@ -110,3 +110,46 @@ runs it matched the bill within about 2%). `modal billing report --for today -r 
   waiting for a container. Crashes, timeouts and non-NVIDIA adapters raise, and
   Modal retries them once (`retries=1`).
 - Stop a stuck run with Ctrl-C; `modal app logs gooey-render` shows the container side.
+
+## Studio API (gooey_api.py)
+
+`modal/gooey_api.py` is the hosted studio's backend (app `gooey-3d-api`): a FastAPI app
+on one web endpoint implementing the "Modal HTTP API" in `studio/hosted/CONTRACT.md`.
+
+- `POST /build` builds inline in the web container (CPU, 4 cores, 6 GiB, up to 4 requests
+  at once, kept warm 300 s after the last request) and returns the report, the STL (and
+  STEP with `step: true`) as base64. Each container starts a pool of 4 `gooey-3d cad
+  serve` processes at boot, one per request slot, each with a warm cad-worker (so no
+  per-request worker start-up or OpenCascade init). A request takes one, sends its
+  `build` and `params` requests together and gets both answers in order. The pool is
+  LIFO, so one editing session keeps hitting the same, hottest worker. `cad serve`
+  replaces its worker after a timeout, trap or crash, and past 300 jobs or 1 GiB of
+  OpenCascade heap. A serve process that dies, or doesn't answer within its limit +
+  15 s, is restarted (a dead one is retried once, since a script can't kill it).
+- `POST /render` spawns `render_job` on a GPU (T4, then L4; at most 4 containers, 900 s
+  timeout, warm 60 s) running `gooey-3d render sheet` or `render stl`, and returns a
+  `call_id` at once; `GET /render/{call_id}` polls it (results are kept by Modal for a
+  limited time, so callers store the PNG as soon as it is done).
+- The image is the full `gooey-3d` build (cad + render + mould: cmake, g++, git for
+  Manifold) with a linux-x64 `gooey-cad-worker` (bun 1.3.13) next to the binary. The
+  worker is built in its own layer, so Rust edits and worker edits rebuild only their part.
+
+```sh
+modal secret create gooey-3d-api STUDIO_MODAL_TOKEN="$(cat /tmp/studio-modal-token)" --force
+modal deploy modal/gooey_api.py      # prints the web URL (MODAL_API_URL)
+```
+
+Every route needs `Authorization: Bearer $STUDIO_MODAL_TOKEN`, else 401. The same token
+goes in the Vercel project's `STUDIO_MODAL_TOKEN`.
+
+Measured (2026-11-19, from a Mac, brace.js at length 140+, no STEP): with a process per
+build, about 4.9 s round trip cold (container start; 2.0 s server) and 2.4 s warm (2.0 s
+server, 0.3 s of it worker start-up). With the `cad serve` pool, 4.6 s cold (1.8 s server:
+a fresh worker's first eval is ~2x slower) and 1.0 s warm (0.83 s server); CPU hosts vary
+by about 1.5x. A syntax or params error takes about 0.3 s (under 0.02 s on the server). A 2-STL x 2-view x 2-material sheet at 256 px / 64 spp took 9.5 to 14 s
+wall cold on a T4 (1.6 to 4.7 s inside the function), a 1200 px / 128 spp still 7 s.
+
+Cost: the web container bills CPU and memory while warm (4 cores + 6 GiB, roughly
+$0.25/h), so each editing session pays up to 5 min of idle after its last build; nothing
+when idle. Renders bill GPU seconds like `gooey-render` plus up to 60 s of warm idle per
+burst. `modal app logs gooey-3d-api` shows both sides.

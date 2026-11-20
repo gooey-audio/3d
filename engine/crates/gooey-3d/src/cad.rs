@@ -3,14 +3,16 @@
 //!   gooey-3d cad build part.js --out DIR [--set name=value ...] [--timeout S] [--json]
 //!   gooey-3d cad check part.js [--set name=value ...]
 //!   gooey-3d cad params part.js
+//!   gooey-3d cad serve [--timeout S] [--max-jobs N] [--max-heap-mb MB]
 
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::flags::{Flags, parse};
-use gooey_cad::{CadError, Material, Options, Report};
-use serde_json::{Value, json};
+use gooey_cad::{CadError, ErrorKind, Material, Options, Report, Worker, WorkerCommand, Written};
+use serde_json::{Map, Value, json};
 
 pub use gooey_cad::{PROTOCOL, VERSION};
 
@@ -24,6 +26,9 @@ usage:
       Build and validate; keep no files.
   gooey-3d cad params PART.js
       The script's defaultParams and paramRanges as JSON.
+  gooey-3d cad serve [--timeout S] [--max-jobs N] [--max-heap-mb MB]
+      Keep one warm worker and answer JSON-lines requests on stdin, one response
+      line per request on stdout, in order (see \"serve protocol\" below).
 
 options:
   --set NAME=VALUE        override a defaultParams entry (repeatable)
@@ -36,6 +41,20 @@ options:
 
 The worker: $GOOEY_CAD_WORKER (a path or command, e.g. \"node cad-worker/src/worker.ts\"),
 else gooey-cad-worker next to gooey-3d. Build it with cad-worker/build.sh (needs bun).
+
+serve protocol (one JSON object per line):
+  first line out: {\"ready\":true, \"protocol\", \"versions\", \"startup_seconds\"} (or \"error\"
+      when the worker could not start; it is retried on the next request)
+  {\"id\", \"op\":\"build\", \"script\":PATH, \"params\":{...}, \"out\":DIR|null, \"step\":true,
+   \"allow_out_of_range\":false, \"timeout\":S, \"tolerance\":MM, \"material\", \"bed\"}
+      -> {\"id\", \"ok\":true, \"outputs\":{\"stl\",\"step\",\"report\"}|null, \"report\":{...}}
+         as `cad build --json` (no \"out\": validate only, like `cad check`)
+  {\"id\", \"op\":\"params\", \"script\":PATH, \"timeout\":S}
+      -> {\"id\", \"ok\":true, \"defaultParams\":{...}, \"paramRanges\":{...}}
+  errors: {\"id\", \"ok\":false, \"error\":{kind, message, line, column}}
+  Only op and script are required. The worker is replaced after a timeout, trap or
+  crash, and after --max-jobs jobs (default 300) or --max-heap-mb of OpenCascade heap
+  (default 2048). --timeout is the default per-request limit (30 s). EOF on stdin exits 0.
 
 Exit status: 0 ok; 2 script, syntax, params, kernel, limits, invalid or expect error
 (or bad usage); 3 timeout; 4 worker missing, crashed or trapped.";
@@ -53,6 +72,7 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         Some("build") => build_cmd(rest, true),
         Some("check") => build_cmd(rest, false),
         Some("params") => params_cmd(rest),
+        Some("serve") => serve_cmd(rest),
         Some(other) => Err(format!("unknown cad command `{other}`\n{USAGE}")),
     }
 }
@@ -191,6 +211,226 @@ fn params_cmd(args: &[String]) -> Result<ExitCode, String> {
         }
         Err(e) => Ok(fail(&e, f.has("--json"))),
     }
+}
+
+// ------------------------------------------------------------------ serve
+
+/// `cad serve` recycling thresholds (as studio/server's builder).
+const SERVE_MAX_JOBS: u64 = 300;
+const SERVE_MAX_HEAP_MB: f64 = 2048.0;
+
+struct Serve {
+    cmd: Option<WorkerCommand>,
+    worker: Option<Worker>,
+    timeout: Duration,
+    max_jobs: u64,
+    max_heap_mb: f64,
+}
+
+impl Serve {
+    /// The warm worker, (re)started if needed.
+    fn worker(&mut self) -> Result<&mut Worker, CadError> {
+        if self.worker.as_ref().is_some_and(|w| !self.fit(w))
+            && let Some(w) = self.worker.take()
+        {
+            w.shutdown();
+        }
+        if self.worker.is_none() {
+            let cmd = match &self.cmd {
+                Some(c) => c.clone(),
+                None => WorkerCommand::locate()?,
+            };
+            self.worker = Some(Worker::spawn(&cmd, gooey_cad::STARTUP_TIMEOUT)?);
+        }
+        Ok(self.worker.as_mut().unwrap())
+    }
+
+    fn fit(&self, w: &Worker) -> bool {
+        w.usable() && w.jobs < self.max_jobs && w.heap_mb < self.max_heap_mb
+    }
+
+    /// Starts a worker between requests (at start-up, or replacing a dead or
+    /// worn-out one) so the next request finds it warm.
+    fn prewarm(&mut self) -> Result<(Value, f64), CadError> {
+        let w = self.worker()?;
+        let startup = w.startup_seconds;
+        // Spawned off the request path: builds report `spawn` 0 (gooey-cad counts
+        // start-up on a worker's first job).
+        w.startup_seconds = 0.0;
+        Ok((w.ready.versions.clone(), startup))
+    }
+
+    fn rewarm(&mut self) {
+        if self.worker.as_ref().is_none_or(|w| !self.fit(w))
+            && let Err(e) = self.prewarm()
+        {
+            eprintln!("gooey-3d: cad serve: {e}");
+        }
+    }
+
+    fn handle(&mut self, line: &str) -> Value {
+        let req: Map<String, Value> = match serde_json::from_str(line) {
+            Ok(Value::Object(m)) => m,
+            Ok(_) => return serve_error(Value::Null, &bad_request("a request is a JSON object")),
+            Err(e) => return serve_error(Value::Null, &bad_request(&format!("bad JSON request: {e}"))),
+        };
+        let id = req.get("id").cloned().unwrap_or(Value::Null);
+        let res = match req.get("op").and_then(Value::as_str) {
+            Some("build") => self.build(&req),
+            Some("params") => self.params(&req),
+            other => Err(bad_request(&format!("unknown op {}", json!(other)))),
+        };
+        let mut msg = match res {
+            Ok(Value::Object(m)) => m,
+            Ok(_) => unreachable!("serve results are objects"),
+            Err(e) => return serve_error(id, &e),
+        };
+        msg.insert("ok".into(), true.into());
+        let mut out = Map::new();
+        out.insert("id".into(), id);
+        out.extend(msg);
+        Value::Object(out)
+    }
+
+    fn options(&self, req: &Map<String, Value>) -> Result<Options, CadError> {
+        let mut o = Options {
+            timeout: self.timeout,
+            ..Options::default()
+        };
+        match req.get("params") {
+            None | Some(Value::Null) => {}
+            Some(Value::Object(p)) => o.params = p.clone(),
+            Some(_) => return Err(bad_request("`params` must be an object")),
+        }
+        o.step = flag(req, "step", true)?;
+        o.allow_out_of_range = flag(req, "allow_out_of_range", false)?;
+        if let Some(t) = positive(req, "timeout")? {
+            o.timeout = Duration::from_secs_f64(t);
+        }
+        o.tolerance = positive(req, "tolerance")?;
+        if let Some(b) = positive(req, "bed")? {
+            o.bed = b;
+        }
+        match req.get("material") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(m)) => o.material = m.parse::<Material>().map_err(|e| bad_request(&e))?,
+            Some(_) => return Err(bad_request("`material` must be a string")),
+        }
+        Ok(o)
+    }
+
+    fn build(&mut self, req: &Map<String, Value>) -> Result<Value, CadError> {
+        let script = script_of(req)?;
+        let opts = self.options(req)?;
+        let out = match req.get("out") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(d)) if !d.is_empty() => Some(Path::new(d)),
+            Some(_) => return Err(bad_request("`out` must be a directory path")),
+        };
+        let (report, written) = gooey_cad::build_on(self.worker()?, script, &opts, out)?;
+        Ok(json!({ "outputs": written.as_ref().map(outputs_json), "report": report }))
+    }
+
+    fn params(&mut self, req: &Map<String, Value>) -> Result<Value, CadError> {
+        let script = script_of(req)?;
+        let timeout = positive(req, "timeout")?.map_or(self.timeout, Duration::from_secs_f64);
+        gooey_cad::params_with(self.worker()?, script, timeout)
+    }
+}
+
+fn bad_request(msg: &str) -> CadError {
+    CadError::new(ErrorKind::Protocol, msg)
+}
+
+fn script_of(req: &Map<String, Value>) -> Result<&Path, CadError> {
+    match req.get("script") {
+        Some(Value::String(s)) if !s.is_empty() => Ok(Path::new(s)),
+        _ => Err(bad_request("request needs a `script` path")),
+    }
+}
+
+fn flag(req: &Map<String, Value>, k: &str, default: bool) -> Result<bool, CadError> {
+    match req.get(k) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(bad_request(&format!("`{k}` must be true or false"))),
+    }
+}
+
+fn positive(req: &Map<String, Value>, k: &str) -> Result<Option<f64>, CadError> {
+    match req.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_f64() {
+            Some(x) if x.is_finite() && x > 0.0 => Ok(Some(x)),
+            _ => Err(bad_request(&format!("`{k}` must be a positive number"))),
+        },
+    }
+}
+
+fn outputs_json(w: &Written) -> Value {
+    json!({ "stl": w.stl, "step": w.step, "report": w.report })
+}
+
+fn serve_error(id: Value, e: &CadError) -> Value {
+    json!({ "id": id, "ok": false, "error": e })
+}
+
+fn serve_cmd(args: &[String]) -> Result<ExitCode, String> {
+    const VALUES: &[&str] = &["--timeout", "--max-jobs", "--max-heap-mb"];
+    let f = parse(args, VALUES)?;
+    f.reject_unknown(&[], VALUES)?;
+    if !f.positional.is_empty() {
+        return Err(format!("cad serve takes no arguments\n{USAGE}"));
+    }
+    let mut s = Serve {
+        cmd: None,
+        worker: None,
+        timeout: number(&f, "--timeout")?.map_or(gooey_cad::DEFAULT_TIMEOUT, Duration::from_secs_f64),
+        max_jobs: number(&f, "--max-jobs")?.map_or(SERVE_MAX_JOBS, |n| n.ceil() as u64),
+        max_heap_mb: number(&f, "--max-heap-mb")?.unwrap_or(SERVE_MAX_HEAP_MB),
+    };
+    // Resolve the worker once ($GOOEY_CAD_WORKER or the sibling); a missing one is
+    // reported in the ready line and on every request.
+    let mut ready = Map::new();
+    ready.insert("ready".into(), true.into());
+    ready.insert("protocol".into(), gooey_cad::PROTOCOL.into());
+    ready.insert("version".into(), VERSION.into());
+    match WorkerCommand::locate().and_then(|c| {
+        s.cmd = Some(c);
+        s.prewarm()
+    }) {
+        Ok((versions, startup)) => {
+            ready.insert("versions".into(), versions);
+            ready.insert("startup_seconds".into(), json!((startup * 1000.0).round() / 1000.0));
+        }
+        Err(e) => {
+            eprintln!("gooey-3d: cad serve: {e}");
+            ready.insert("error".into(), json!(e));
+        }
+    }
+    let stdout = std::io::stdout();
+    let send = |v: &Value| -> bool {
+        let mut out = stdout.lock();
+        writeln!(out, "{}", serde_json::to_string(v).expect("JSON")).is_ok() && out.flush().is_ok()
+    };
+    if !send(&Value::Object(ready)) {
+        return Ok(ExitCode::SUCCESS);
+    }
+    for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let res = s.handle(&line);
+        if !send(&res) {
+            break; // the client went away
+        }
+        s.rewarm();
+    }
+    if let Some(w) = s.worker.take() {
+        w.shutdown();
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]

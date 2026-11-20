@@ -71,7 +71,7 @@ fn holes(r: &Report) -> Vec<[f64; 2]> {
     let mut c: Vec<[f64; 2]> = r
         .faces
         .iter()
-        .filter(|f| f.surface == "CYLINDRE" && f.center[1].abs() < half_w - 3.0)
+        .filter(|f| f.surface == "cylinder" && f.center[1].abs() < half_w - 3.0)
         .map(|f| [f.center[0], f.center[1]])
         .collect();
     c.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -116,8 +116,42 @@ fn brace_builds_watertight_one_piece_genus_4() {
         .collect();
     assert_eq!(names.len(), 3, "{names:?}");
 
+    // Stable lowercase surface names and unit normals on every face (a cylinder's
+    // raw normal is scaled by its radius); hole walls face sideways.
+    const TYPES: &[&str] = &[
+        "plane",
+        "cylinder",
+        "cone",
+        "sphere",
+        "torus",
+        "bezier",
+        "bspline",
+        "revolution",
+        "extrusion",
+        "offset",
+        "other",
+    ];
+    for f in &r.faces {
+        assert!(TYPES.contains(&f.surface.as_str()), "{f:?}");
+        let len = f.normal.iter().map(|c| c * c).sum::<f64>().sqrt();
+        assert!((len - 1.0).abs() < 1e-3, "|normal| {len}: {f:?}");
+        if f.surface == "cylinder" {
+            assert!(f.normal[2].abs() < 1e-3, "{f:?}");
+        }
+    }
+    assert!(
+        r.faces
+            .iter()
+            .any(|f| f.surface == "plane" && f.normal == [0.0, 0.0, -1.0]),
+        "the bottom"
+    );
+    assert!(
+        r.faces.iter().any(|f| f.surface != "plane" && f.surface != "cylinder"),
+        "the sine top"
+    );
+
     // Eight cylinder faces: four corner fillets and four holes at (±50, ±10).
-    assert_eq!(r.faces.iter().filter(|f| f.surface == "CYLINDRE").count(), 8);
+    assert_eq!(r.faces.iter().filter(|f| f.surface == "cylinder").count(), 8);
     let h = holes(&r);
     assert_eq!(h.len(), 4, "{h:?}");
     for (c, want) in h
@@ -221,6 +255,14 @@ fn script_errors_carry_lines() {
     let Some((mut opts, _g)) = setup() else { return };
     let e = build(&script("syntax.js"), &opts, None).unwrap_err();
     assert_eq!((e.kind, e.line), (ErrorKind::Syntax, Some(4)), "{e}");
+    // Several parse errors: the first one's position, all of them in the message,
+    // named by the script's file name (no temp or host directories).
+    let e = build(&script("two-syntax.js"), &opts, None).unwrap_err();
+    assert_eq!((e.kind, e.line, e.column), (ErrorKind::Syntax, Some(6), Some(9)), "{e}");
+    for at in ["two-syntax.js:6:9: ", "two-syntax.js:8:7: "] {
+        assert!(e.message.contains(at), "{at}: {e}");
+    }
+    assert!(!e.message.contains('/'), "{e}");
     set(&mut opts, "size", "7");
     let e = build(&script("throws.js"), &opts, None).unwrap_err();
     assert_eq!((e.kind, e.line), (ErrorKind::Script, Some(5)), "{e}");
