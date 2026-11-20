@@ -336,11 +336,11 @@ export function agentTools(part: string, opts: { vision?: boolean } = {}) {
       execute: guard(async ({ views }: { views?: (string | number[])[] }, { toolCallId, abortSignal }: { toolCallId: string; abortSignal?: AbortSignal }) => {
         const scene = await store.readScene(part);
         const v = (views?.length ? views : LOOK.views) as (string | [number, number, number])[];
-        let job = await startRender({ kind: "sheet", inputs: [{ part }], views: v, tile: LOOK.tile, spp: LOOK.spp, ...renderLook(scene) });
+        let job = await startRender({ kind: "sheet", inputs: [{ part }], views: v, tile: LOOK.tile, spp: LOOK.spp, source: "preview", ...renderLook(scene) });
         const t0 = Date.now();
         while (job.status === "pending") {
           if (Date.now() - t0 > LOOK.waitMs)
-            return fail(`the render did not finish in ${LOOK.waitMs / 1000} s; it keeps running as ${job.id} under Renders. Carry on without it.`);
+            return fail(`the render did not finish in ${LOOK.waitMs / 1000} s; it keeps running as ${job.id} under Render. Carry on without it.`);
           await sleep(1500, abortSignal);
           job = await refresh(job);
         }
@@ -379,14 +379,14 @@ export function agentTools(part: string, opts: { vision?: boolean } = {}) {
     }),
     render_sheet: tool({
       description:
-        'Queue a full-quality path-traced contact sheet of the current build in the scene\'s look (a final render for the user; you do not see it). `views` are view names or [x,y,z] directions; with neither views nor orbit you get iso, front, side and top. `orbit` is "N@DEG": N views evenly spaced around the part (360/N degrees apart), DEG degrees above the horizon; e.g. a 12-view turntable is "12@20". Returns the job id and tile count; the user sees it under Renders.',
+        'Queue a full-quality path-traced contact sheet of the current build in the scene\'s look (a final render for the user; you do not see it). `views` are view names or [x,y,z] directions; with neither views nor orbit you get iso, front, side and top. `orbit` is "N@DEG": N views evenly spaced around the part (360/N degrees apart), DEG degrees above the horizon; e.g. a 12-view turntable is "12@20". Returns the job id and tile count; the user sees it under Render.',
       inputSchema: z.object({
         views: z.array(view).optional(),
         orbit: z.string().optional(),
         spp: z.number().int().min(1).max(4096).optional().describe("samples per pixel, default 256"),
       }),
       execute: guard(async ({ views, orbit, spp }: { views?: (string | number[])[]; orbit?: string; spp?: number }) => {
-        const job = await startPartSheet(part, { views: views as (string | [number, number, number])[] | undefined, orbit: orbit ?? null, spp });
+        const job = await startPartSheet(part, { views: views as (string | [number, number, number])[] | undefined, orbit: orbit ?? null, spp, source: "agent" });
         const req = job.request as { views?: unknown[]; orbit?: string | null };
         const orbitN = req.orbit ? parseInt(req.orbit, 10) || 0 : 0;
         return { ok: true, job: job.id, status: job.status, views: req.views, orbit: req.orbit, tiles: Math.max(1, (req.views?.length ?? 0) + orbitN) };

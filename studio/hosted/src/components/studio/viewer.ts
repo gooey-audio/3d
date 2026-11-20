@@ -29,6 +29,8 @@ export type ViewerOptions = { edges: boolean; wireframe: boolean; grid: boolean;
 export type ViewerEvents = {
   /** A click on a face (`pick`) or on empty space (`null`); `additive`: shift was held. */
   onPick?: (pick: Pick | null, additive: boolean) => void;
+  /** The user started turning or panning the camera. */
+  onOrbitStart?: () => void;
 };
 
 /** Viewer (Y up) to part (Z up) coordinates: the inverse of rotateX(-90 degrees). */
@@ -97,6 +99,8 @@ export class Viewer {
   private boxHelper: THREE.Box3Helper;
   /** Grid spacing (mm) for the current part. */
   gridStep = 0;
+  /** Face hover and picking (off while the preview frames renders). */
+  private picking = true;
 
   // Labels: HTML over the canvas, placed every frame.
   private labels: HTMLDivElement;
@@ -177,7 +181,7 @@ export class Viewer {
       const d = this.down;
       this.down = null;
       this.hoverDirty = true;
-      if (!d || e.button !== 0 || Math.hypot(e.clientX - d.x, e.clientY - d.y) >= CLICK_SLOP_PX) return;
+      if (!d || !this.picking || e.button !== 0 || Math.hypot(e.clientX - d.x, e.clientY - d.y) >= CLICK_SLOP_PX) return;
       this.click(e.clientX, e.clientY, e.shiftKey);
     });
     canvas.addEventListener("pointermove", (e) => {
@@ -189,6 +193,7 @@ export class Viewer {
       this.pointer = null;
       this.setHover(null);
     });
+    this.controls.addEventListener("start", () => this.events.onOrbitStart?.());
     this.controls.addEventListener("change", () => {
       if (this.saveTimer === undefined) this.saveTimer = window.setTimeout(() => this.saveCamera(), 300);
     });
@@ -202,7 +207,7 @@ export class Viewer {
       this.frame = requestAnimationFrame(loop);
       this.controls.update();
       this.updateRig();
-      if (this.hoverDirty && this.pointer && !this.down) {
+      if (this.hoverDirty && this.pointer && !this.down && this.picking) {
         this.hoverDirty = false;
         const hit = this.raycast(this.pointer.x, this.pointer.y);
         this.setHover(hit ? this.faceAt(hit.faceIndex) : null);
@@ -627,6 +632,18 @@ export class Viewer {
     this.scene.environment = this.studioEnv;
     this.scene.environmentRotation.set(0, 0, 0);
     old?.dispose();
+  }
+
+  setPicking(on: boolean) {
+    this.picking = on;
+    if (!on) this.setHover(null);
+  }
+
+  /** The camera's direction (part toward camera, Y up): a render `view`. */
+  cameraDirection(): Vec3 {
+    const d = this.camera.position.clone().sub(this.controls.target).normalize();
+    const r = (x: number) => Math.round(x * 1000) / 1000;
+    return [r(d.x), r(d.y), r(d.z)];
   }
 
   resetView() {

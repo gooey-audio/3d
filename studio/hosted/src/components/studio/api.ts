@@ -65,7 +65,6 @@ export const api = {
   build: (part: string) => call<BuildSummary>("POST", `${p(part)}/build`),
   patchScene: (part: string, patch: unknown) =>
     call<{ scene: Scene; resolved: Resolved; build: BuildSummary | null }>("PATCH", `${p(part)}/scene`, patch),
-  renderPart: (part: string) => call<RenderJob>("POST", `${p(part)}/render`),
   meshUrl: (part: string, v: number | string) => `${p(part)}/mesh?v=${v}`,
   faces: (part: string) => call<Face[]>("GET", `${p(part)}/faces`),
   history: (part: string) => call<CheckpointInfo[]>("GET", `${p(part)}/history`),
