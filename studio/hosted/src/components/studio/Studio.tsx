@@ -21,7 +21,7 @@ const AUTOSAVE_MS = 800;
 const TOAST_MS = 8000;
 const EMPTY: Record<string, unknown> = {};
 const VIEW_OPTIONS_KEY = "gooey-studio.viewer-options";
-const NO_OPTIONS: ViewerOptions = { edges: false, wireframe: false, grid: false, dims: false };
+const NO_OPTIONS: ViewerOptions = { edges: false, wireframe: false, grid: false, dims: false, banana: false };
 
 /** The build whose mesh (and face table) is stored: this one, or the last good one. */
 const meshRev = (b: BuildSummary) => (b.ok ? b.rev : (b.lastGood?.rev ?? b.rev));
@@ -741,6 +741,7 @@ export function Studio() {
                     ["wireframe", "wire", "the mesh triangles"],
                     ["grid", viewOpts.grid && gridStep ? `grid ${gridStep} mm` : "grid", "a ground grid sized to the part"],
                     ["dims", "dims", "bounding-box dimensions, mm"],
+                    ["banana", "🍌", "a life-size banana (about 19 cm) beside the part, for scale"],
                   ] as [keyof ViewerOptions, string, string][]
                 ).map(([k, label, title]) => (
                   <button key={k} className={viewOpts[k] ? "on" : ""} onClick={() => toggleView(k)} title={title} aria-pressed={viewOpts[k]}>
