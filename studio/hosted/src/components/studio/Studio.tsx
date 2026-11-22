@@ -15,6 +15,8 @@ import { DEFAULT_UNITS, fmtSize, fmtStep, fmtVolume, parseUnits, reportUnits, UN
 import { api, ApiError, errorMessage, sha256, type BuildSummary, type PartInfo, type Report } from "./api";
 import { Editor } from "./Editor";
 import { History } from "./History";
+import { explain } from "./printability";
+import { PrintChip, PrintPanel } from "./PrintIssues";
 import { Look, Params } from "./Panels";
 import {
   cellInput,
@@ -88,6 +90,7 @@ export function Studio() {
   // The studio-wide units: what every dimension is shown in, and what new parts are written in.
   const [units, setUnitsState] = useState<Units>(DEFAULT_UNITS);
   const [dirty, setDirty] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; id: number } | null>(null);
   const faceTable = useRef<{ rev: number; topology: string } | null>(null);
   const tabRef = useRef<Tab>("script");
@@ -658,6 +661,12 @@ export function Studio() {
   const info = build?.info ?? lastInfo ?? null;
   const hasMesh = parts.find((p) => p.name === current)?.mesh ?? false;
   const openJob = renders.jobs.find((j) => j.id === openRender) ?? null;
+  const printability = report?.printability;
+  const print = useMemo(() => (printability ? explain(printability.fails, printability.material, units) : null), [printability, units]);
+  const printMarks = printOpen && mode !== "renders" && print && !printability?.ok ? print.marks : null;
+  useEffect(() => {
+    viewer.current?.setPrintMarks(printMarks);
+  }, [printMarks]);
 
   return (
     <div className="app">
@@ -844,23 +853,24 @@ export function Studio() {
             <div className="topbar">
               {mode === "renders" && scene && <PreviewHud settings={renderSettings} scene={scene} />}
               {report && mode !== "renders" && (
-                <div className={`chips ${stale ? "stale" : ""}`} title={stale ? "the last good build (the latest one failed)" : undefined}>
-                  {stale && <span className="stale-note">last good{build?.lastGood ? ` · rev ${build.lastGood.rev}` : ""}</span>}
-                  <span>{fmtSize(report.size_mm, units)}</span>
-                  <span>{fmtVolume(report.volume_mm3, units)}</span>
-                  {reportUnits(report) !== units && (
-                    <span title={`The script's lengths are in ${UNIT_LABELS[reportUnits(report)]} (export const units)`}>script in {reportUnits(report)}</span>
-                  )}
-                  <span>
-                    {report.pieces} piece{report.pieces === 1 ? "" : "s"}, genus {report.genus}
-                  </span>
-                  <span>{report.triangles.toLocaleString()} tris</span>
-                  {report.printability && (
-                    <span className={report.printability.ok ? "ok" : "warn"} title={report.printability.fails.join("\n")}>
-                      {report.printability.ok
-                        ? "printable"
-                        : `${report.printability.fails.length} print issue${report.printability.fails.length === 1 ? "" : "s"}`}
+                <div className="topbar-left">
+                  <div className={`chips ${stale ? "stale" : ""}`} title={stale ? "the last good build (the latest one failed)" : undefined}>
+                    {stale && <span className="stale-note">last good{build?.lastGood ? ` · rev ${build.lastGood.rev}` : ""}</span>}
+                    <span>{fmtSize(report.size_mm, units)}</span>
+                    <span>{fmtVolume(report.volume_mm3, units)}</span>
+                    {reportUnits(report) !== units && (
+                      <span title={`The script's lengths are in ${UNIT_LABELS[reportUnits(report)]} (export const units)`}>script in {reportUnits(report)}</span>
+                    )}
+                    <span>
+                      {report.pieces} piece{report.pieces === 1 ? "" : "s"}, genus {report.genus}
                     </span>
+                    <span>{report.triangles.toLocaleString()} tris</span>
+                    {printability && print && (
+                      <PrintChip ok={printability.ok} count={print.issues.length} open={printOpen} onToggle={() => setPrintOpen((o) => !o)} />
+                    )}
+                  </div>
+                  {printOpen && printability && print && (
+                    <PrintPanel ok={printability.ok} material={printability.material} issues={print.issues} onClose={() => setPrintOpen(false)} />
                   )}
                 </div>
               )}
