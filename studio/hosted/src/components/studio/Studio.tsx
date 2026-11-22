@@ -13,6 +13,8 @@ import type { Face, FaceSelection } from "@/lib/selection";
 import { api, ApiError, errorMessage, sha256, type BuildSummary, type PartInfo, type Report } from "./api";
 import { Editor } from "./Editor";
 import { History } from "./History";
+import { explain } from "./printability";
+import { PrintChip, PrintPanel } from "./PrintIssues";
 import { Look, Params } from "./Panels";
 import { Renders } from "./Renders";
 import { Viewer, type Vec3, type ViewerOptions } from "./viewer";
@@ -67,6 +69,7 @@ export function Studio() {
   const [viewOpts, setViewOpts] = useState<ViewerOptions>(NO_OPTIONS);
   const [gridStep, setGridStep] = useState(0);
   const [dirty, setDirty] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; id: number } | null>(null);
   const faceTable = useRef<{ rev: number; topology: string } | null>(null);
   const tabRef = useRef<Tab>("script");
@@ -555,6 +558,12 @@ export function Studio() {
   const stale = !!build && !build.ok;
   const info = build?.info ?? lastInfo ?? null;
   const hasMesh = parts.find((p) => p.name === current)?.mesh ?? false;
+  const printability = report?.printability;
+  const print = useMemo(() => (printability ? explain(printability.fails, printability.material) : null), [printability]);
+  const printMarks = printOpen && print && !printability?.ok ? print.marks : null;
+  useEffect(() => {
+    viewer.current?.setPrintMarks(printMarks);
+  }, [printMarks]);
 
   return (
     <div className="app">
@@ -717,20 +726,21 @@ export function Studio() {
           <div className="overlay">
             <div className="topbar">
               {report && (
-                <div className={`chips ${stale ? "stale" : ""}`} title={stale ? "the last good build (the latest one failed)" : undefined}>
-                  {stale && <span className="stale-note">last good{build?.lastGood ? ` · rev ${build.lastGood.rev}` : ""}</span>}
-                  <span>{report.size_mm.map((x) => x.toFixed(1)).join(" × ")} mm</span>
-                  <span>{(report.volume_mm3 / 1000).toFixed(1)} cm³</span>
-                  <span>
-                    {report.pieces} piece{report.pieces === 1 ? "" : "s"}, genus {report.genus}
-                  </span>
-                  <span>{report.triangles.toLocaleString()} tris</span>
-                  {report.printability && (
-                    <span className={report.printability.ok ? "ok" : "warn"} title={report.printability.fails.join("\n")}>
-                      {report.printability.ok
-                        ? "printable"
-                        : `${report.printability.fails.length} print issue${report.printability.fails.length === 1 ? "" : "s"}`}
+                <div className="topbar-left">
+                  <div className={`chips ${stale ? "stale" : ""}`} title={stale ? "the last good build (the latest one failed)" : undefined}>
+                    {stale && <span className="stale-note">last good{build?.lastGood ? ` · rev ${build.lastGood.rev}` : ""}</span>}
+                    <span>{report.size_mm.map((x) => x.toFixed(1)).join(" × ")} mm</span>
+                    <span>{(report.volume_mm3 / 1000).toFixed(1)} cm³</span>
+                    <span>
+                      {report.pieces} piece{report.pieces === 1 ? "" : "s"}, genus {report.genus}
                     </span>
+                    <span>{report.triangles.toLocaleString()} tris</span>
+                    {printability && print && (
+                      <PrintChip ok={printability.ok} count={print.issues.length} open={printOpen} onToggle={() => setPrintOpen((o) => !o)} />
+                    )}
+                  </div>
+                  {printOpen && printability && print && (
+                    <PrintPanel ok={printability.ok} material={printability.material} issues={print.issues} onClose={() => setPrintOpen(false)} />
                   )}
                 </div>
               )}

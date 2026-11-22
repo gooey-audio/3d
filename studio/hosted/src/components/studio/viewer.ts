@@ -21,6 +21,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { toCreasedNormals } from "three/addons/utils/BufferGeometryUtils.js";
 import type { Resolved } from "@/lib/scene";
 import type { Face, FaceSelection } from "@/lib/selection";
+import type { PrintMarks } from "./printability";
 
 export type Vec3 = [number, number, number];
 /** A click on a face, in part coordinates (mm, Z up). `normal` is the clicked triangle's. */
@@ -105,6 +106,13 @@ export class Viewer {
   private pickAt: THREE.Vector3 | null = null;
   private dimLabels: HTMLDivElement[];
 
+  // Print issues: overhang triangles (an overlay like the highlights), thin-section planes and
+  // post lines (drawn through the part), with labels.
+  private marks: PrintMarks | null = null;
+  private overhangMesh: THREE.Mesh;
+  private markGroup = new THREE.Group();
+  private markLabels: { at: THREE.Vector3; el: HTMLDivElement }[] = [];
+
   // Camera persistence (per part, sessionStorage).
   private part: string | null = null;
   private lookSeen = false;
@@ -153,9 +161,16 @@ export class Viewer {
       new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true, opacity: 0.12, depthWrite: false }),
     );
     this.wire.renderOrder = 1;
+    this.overhangMesh = new THREE.Mesh(new THREE.BufferGeometry(), [
+      overlayMaterial(0xf04848, 0.7),
+      overlayMaterial(0xe6b450, 0.55),
+    ]);
+    this.overhangMesh.renderOrder = 2;
+    this.markGroup.renderOrder = 4;
+    this.scene.add(this.markGroup);
     this.boxHelper = new THREE.Box3Helper(this.box, 0x7aa2f7);
     Object.assign(this.boxHelper.material, { transparent: true, opacity: 0.75, depthWrite: false });
-    for (const o of [this.hoverMesh, this.selMesh, this.wire, this.boxHelper]) {
+    for (const o of [this.hoverMesh, this.selMesh, this.overhangMesh, this.wire, this.boxHelper]) {
       o.visible = false;
       this.scene.add(o);
     }
@@ -252,6 +267,8 @@ export class Viewer {
     this.selMesh.geometry.dispose();
     this.hoverMesh.geometry = sharedView(geom);
     this.selMesh.geometry = sharedView(geom);
+    this.overhangMesh.geometry.dispose();
+    this.overhangMesh.geometry = sharedView(geom);
     this.wire.geometry = geom;
     this.setFacesTable([]);
     this.edges?.geometry.dispose();
@@ -273,6 +290,7 @@ export class Viewer {
     s.updateProjectionMatrix();
     this.updateGrid();
     this.applyOptions();
+    this.updateMarks();
     if (first) {
       if (!this.restoreCamera()) {
         this.frameView(this.lastDirection);
@@ -364,6 +382,105 @@ export class Viewer {
     if (!(o.dims && has)) this.hide(...this.dimLabels);
   }
 
+  /** Shows where the print issues are (null: hides them). Kept across meshes. */
+  setPrintMarks(m: PrintMarks | null) {
+    this.marks = m;
+    this.updateMarks();
+  }
+
+  private updateMarks() {
+    for (const o of this.markGroup.children) {
+      if (o instanceof THREE.Mesh || o instanceof THREE.Line) {
+        o.geometry.dispose();
+        (o.material as THREE.Material).dispose();
+      }
+    }
+    this.markGroup.clear();
+    for (const l of this.markLabels) l.el.remove();
+    this.markLabels = [];
+    this.overhangMesh.visible = false;
+    const m = this.marks;
+    const mesh = this.mesh;
+    if (!m || !mesh) return;
+    const b = this.box;
+    const label = (at: THREE.Vector3, text: string) => {
+      const e = el("div", "viewer-issue", text);
+      this.labels.appendChild(e);
+      this.markLabels.push({ at, el: e });
+    };
+
+    if (m.overhangs) {
+      // check.rs: triangles facing down more than 44.5 degrees past vertical, above the first
+      // 0.3 mm. Flat ceilings (amber) may be bridges, which the check does not count.
+      const pos = mesh.geometry.attributes.position as THREE.BufferAttribute;
+      const g = this.overhangMesh.geometry;
+      g.clearGroups();
+      const cosT = Math.cos(((45 - 0.5) * Math.PI) / 180);
+      const a = new THREE.Vector3();
+      const u = new THREE.Vector3();
+      const v = new THREE.Vector3();
+      const n = pos.count / 3;
+      let runMat = -1;
+      let runStart = 0;
+      for (let t = 0; t <= n; t++) {
+        let mat = -1;
+        if (t < n) {
+          a.fromBufferAttribute(pos, 3 * t);
+          u.fromBufferAttribute(pos, 3 * t + 1).sub(a);
+          v.fromBufferAttribute(pos, 3 * t + 2).sub(a);
+          const cy = a.y + (u.y + v.y) / 3;
+          u.cross(v);
+          const len = u.length();
+          const ny = len > 0 ? u.y / len : 0;
+          if (ny < -cosT && cy > b.min.y + 0.3) mat = ny < -0.999 ? 1 : 0;
+        }
+        if (mat !== runMat) {
+          if (runMat >= 0) g.addGroup(runStart * 3, (t - runStart) * 3, runMat);
+          runMat = mat;
+          runStart = t;
+        }
+      }
+      this.overhangMesh.visible = g.groups.length > 0;
+    }
+
+    // Planes and lines draw over the part: the problem is usually inside or behind it.
+    const size = b.getSize(new THREE.Vector3());
+    const ctr = b.getCenter(new THREE.Vector3());
+    const pad = Math.max(size.x, size.z) * 0.08 + 2;
+    const onTop = { depthTest: false, depthWrite: false, transparent: true, toneMapped: false };
+    for (const [z0, z1] of m.thin) {
+      // A band over the footprint from half a layer below the first thin section to half
+      // above the last, outlined top and bottom.
+      const lo = z0 - 0.25;
+      const hi = z1 + 0.25;
+      const w = size.x + 2 * pad;
+      const d = size.z + 2 * pad;
+      const band = new THREE.Mesh(
+        new THREE.BoxGeometry(w, hi - lo, d),
+        new THREE.MeshBasicMaterial({ color: 0xf04848, opacity: 0.08, side: THREE.DoubleSide, ...onTop }),
+      );
+      band.position.set(ctr.x, (lo + hi) / 2, ctr.z);
+      const rim = new THREE.LineSegments(
+        new THREE.EdgesGeometry(band.geometry),
+        new THREE.LineBasicMaterial({ color: 0xf04848, opacity: 0.9, ...onTop }),
+      );
+      rim.position.copy(band.position);
+      this.markGroup.add(band, rim);
+      const z = z0 === z1 ? fmt(z0, 1) : `${fmt(z0, 1)}–${fmt(z1, 1)}`;
+      label(new THREE.Vector3(ctr.x + w / 2, hi, ctr.z + d / 2), `thin at z ${z}`);
+    }
+    for (const p of m.posts) {
+      const at = fromPart([p.at[0], p.at[1], 0]);
+      const top = new THREE.Vector3(at.x, b.max.y + pad, at.z);
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(at.x, b.min.y, at.z), top]),
+        new THREE.LineBasicMaterial({ color: 0xf04848, ...onTop }),
+      );
+      this.markGroup.add(line);
+      label(top, `post ${fmt(p.height, 1)} × ${fmt(p.width, 1)} mm`);
+    }
+  }
+
   /** A grid on the ground, about ten cells across the part's footprint (1/2/5 x 10^n mm). */
   private updateGrid() {
     this.grid?.geometry.dispose();
@@ -443,6 +560,7 @@ export class Viewer {
       this.show(label, ((p.x + 1) / 2) * w, ((1 - p.y) / 2) * h);
     };
     if (this.pickAt) at(this.pickAt, this.pickLabel);
+    for (const l of this.markLabels) at(l.at, l.el);
     if (this.options.dims && this.mesh) {
       // Label the box edges facing the camera: X along the front, part Y along the side, Z up a
       // silhouette corner. Part X = viewer x, part Y = -viewer z, part Z = viewer y.
@@ -530,6 +648,7 @@ export class Viewer {
     this.mesh = null;
     this.setFacesTable([]);
     this.applyOptions();
+    this.updateMarks();
   }
 
   private lastDirection: [number, number, number] = [1.25, 0.8, 1.5];
