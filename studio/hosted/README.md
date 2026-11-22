@@ -28,6 +28,17 @@ API, Blob layout): [CONTRACT.md](CONTRACT.md).
 | `BLOB_WEBHOOK_PUBLIC_KEY` | set by Vercel with the store; the presigned-upload helper wants it |
 | `MODAL_API_URL`, `STUDIO_MODAL_TOKEN` | the Modal API (`engine/modal/gooey_api.py`). Unset locally: the local fallback below |
 | `DEEPSEEK_API_KEY` | the agent's `deepseek-direct` model; other models go through the AI Gateway (OIDC) |
+| `NEXT_PUBLIC_STUDIO_UNITS` | optional: the default of the units setting (`in`, `cm` or `mm`; default `in`) |
+
+## Units
+
+Inches by default. The header's units menu (kept per browser) sets the units of every dimension
+the UI shows (size, volume, grid, dims, picked points, chat chips), the units of new parts, and
+the units the agent answers in. Each script declares its own (`export const units = "in"`), so
+switching the setting never rescales an existing part; the engine builds a script without one
+in its default (`GOOEY_UNITS` on Modal, else inches). Meshes, STEP files, reports and face tables
+are always mm (`lib/units.ts` converts); the agent reads sizes, faces and selections in the
+script's units.
 
 ## Local development
 

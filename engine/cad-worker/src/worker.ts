@@ -4,18 +4,23 @@
 //
 // On start:  {"ready":true,"protocol":1,"versions":{...},"initMs":N}
 //
-//   build:  {"id", "op":"build", "script":"/abs/part.js", "params":{...},
+//   build:  {"id", "op":"build", "script":"/abs/part.js", "params":{...}, "units":"in"|"cm"|"mm",
 //            "allowOutOfRange":false, "tolerance":null|mm, "angularTolerance":0.1,
 //            "limits":{"faces":2000,"triangles":2000000},
 //            "outputs":{"mesh":"/abs/out.stl", "step":"/abs/out.step"}}
-//        -> {"id", "ok":true, "params":{merged}, "valid":bool, "expect":{pieces,genus}|null,
+//        -> {"id", "ok":true, "params":{merged}, "units", "mmPerUnit", "valid":bool, "expect":{pieces,genus}|null,
 //            "mesh", "step", "triangles", "faceCount", "bounds":{min,max},
 //            "tolerance":{"linear","angular"}, "faces":[{face,type,start,count,center,normal}],
 //            "ms":{load,eval,check,mesh,step,total}, "jobs", "heapMB", "rssMB"|null}
-//   params: {"id", "op":"params", "script"}
-//        -> {"id", "ok":true, "defaultParams":{...}, "paramRanges":{...}}
+//   params: {"id", "op":"params", "script", "units"}
+//        -> {"id", "ok":true, "defaultParams":{...}, "paramRanges":{...}, "units"}
 //   errors: {"id", "ok":false, "error":{kind, message, line?, column?, stack?}}
 //           kind: script | syntax | params | kernel | limits | trap | protocol
+//
+// `units` in a request is the default for scripts without `export const units`
+// (default "in"). The script's numbers are in its units; the shape is scaled to
+// mm before anything is measured or written, so meshes, STEP files, bounds and
+// the face table are always mm.
 //
 // The host owns timeouts: a kernel operation can loop forever inside WASM and
 // no in-process timer can interrupt it. After a WASM trap the module state is
@@ -28,6 +33,10 @@ import {
   mergeParams,
   paramRanges,
   resolveExpect,
+  scriptUnits,
+  parseUnits,
+  DEFAULT_UNITS,
+  MM_PER_UNIT,
   describeError,
   ScriptError,
   type Prepared,
@@ -44,6 +53,7 @@ type Request = {
   op?: "build" | "params";
   script: string;
   params?: Params;
+  units?: string | null;
   allowOutOfRange?: boolean;
   tolerance?: number | null;
   angularTolerance?: number;
@@ -82,16 +92,22 @@ async function handle(req: Request): Promise<{ ok: boolean; [k: string]: any }> 
   try {
     if (!req || typeof req.script !== "string") throw new ScriptError("request needs a `script` path", "protocol");
     if (req.op !== "build" && req.op !== "params") throw new ScriptError(`unknown op ${JSON.stringify(req.op)}`, "protocol");
+    const fallback = req.units == null ? DEFAULT_UNITS : parseUnits(req.units);
+    if (!fallback) throw new ScriptError(`units must be "in", "cm" or "mm", got ${JSON.stringify(req.units)}`, "protocol");
     prepared = prepareScript(req.script);
     const { module } = await importScript(prepared, rt.replicad);
+    const units = scriptUnits(module, fallback);
     if (req.op === "params") {
-      return { ok: true, defaultParams: module.defaultParams ?? {}, paramRanges: paramRanges(module) };
+      return { ok: true, defaultParams: module.defaultParams ?? {}, paramRanges: paramRanges(module), units };
     }
     const limits = { ...DEFAULT_LIMITS, ...req.limits };
     const params = mergeParams(module, req.params, req.allowOutOfRange);
     const expect = resolveExpect(module, params);
     const t1 = performance.now();
-    const shape = toShape(rt.replicad, await module.main(rt.replicad, { ...params }));
+    let shape = toShape(rt.replicad, await module.main(rt.replicad, { ...params }));
+    // Everything downstream (mesh, STEP, bounds, faces, tolerances) is in mm.
+    const mmPerUnit = MM_PER_UNIT[units];
+    if (mmPerUnit !== 1) shape = shape.scale(mmPerUnit, [0, 0, 0]);
     const t2 = performance.now();
     try {
       // Cheap guards before tessellation, the step that blows up.
@@ -108,6 +124,8 @@ async function handle(req: Request): Promise<{ ok: boolean; [k: string]: any }> 
       const out: Record<string, unknown> = {
         ok: true,
         params,
+        units,
+        mmPerUnit,
         expect,
         valid,
         faceCount,

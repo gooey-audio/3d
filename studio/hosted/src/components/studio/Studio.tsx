@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { patchScene as applyPatch, resolve, viewDirection, type Scene } from "@/lib/scene";
 import type { Face, FaceSelection } from "@/lib/selection";
+import { DEFAULT_UNITS, fmtSize, fmtStep, fmtVolume, parseUnits, reportUnits, UNIT_LABELS, UNITS, UNITS_STORAGE_KEY, type Units } from "@/lib/units";
 import { api, ApiError, errorMessage, sha256, type BuildSummary, type PartInfo, type Report } from "./api";
 import { Editor } from "./Editor";
 import { History } from "./History";
@@ -84,6 +85,8 @@ export function Studio() {
   const [sel, setSel] = useState<FaceSelection[]>([]);
   const [viewOpts, setViewOpts] = useState<ViewerOptions>(NO_OPTIONS);
   const [gridStep, setGridStep] = useState(0);
+  // The studio-wide units: what every dimension is shown in, and what new parts are written in.
+  const [units, setUnitsState] = useState<Units>(DEFAULT_UNITS);
   const [dirty, setDirty] = useState(false);
   const [toast, setToast] = useState<{ text: string; id: number } | null>(null);
   const faceTable = useRef<{ rev: number; topology: string } | null>(null);
@@ -290,6 +293,22 @@ export function Studio() {
   useEffect(() => {
     viewer.current?.setOptions(mode === "renders" ? NO_OPTIONS : viewOpts);
   }, [viewOpts, mode]);
+  // The units setting, kept in localStorage (read after hydration).
+  useEffect(() => {
+    const u = parseUnits(localStorage.getItem(UNITS_STORAGE_KEY));
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reading localStorage once
+    if (u) setUnitsState(u);
+  }, []);
+  useEffect(() => {
+    const v = viewer.current;
+    if (!v) return;
+    v.setUnits(units);
+    setGridStep(v.gridStep);
+  }, [units]);
+  const setUnits = (u: Units) => {
+    localStorage.setItem(UNITS_STORAGE_KEY, u);
+    setUnitsState(u);
+  };
   const toggleView = (k: keyof ViewerOptions) =>
     setViewOpts((o) => {
       const n = { ...o, [k]: !o[k] };
@@ -537,7 +556,7 @@ export function Studio() {
     const name = creating?.trim();
     if (!name) return;
     try {
-      await api.createPart(name);
+      await api.createPart(name, units);
       setCreating(null);
       await loadParts();
       select(name);
@@ -690,6 +709,19 @@ export function Studio() {
         )}
         <Status building={building} build={build} />
         <span className="spacer" />
+        <select
+          className="units"
+          value={units}
+          onChange={(e) => setUnits(e.target.value as Units)}
+          aria-label="units"
+          title="Units for every dimension shown and for new parts. Each script keeps the units it declares (export const units)."
+        >
+          {UNITS.map((u) => (
+            <option key={u} value={u}>
+              {UNIT_LABELS[u]}
+            </option>
+          ))}
+        </select>
         {current && (
           <a className="button" href={api.stepUrl(current)} download={`${current}.step`} title="Build with STEP output and download it">
             STEP
@@ -814,8 +846,11 @@ export function Studio() {
               {report && mode !== "renders" && (
                 <div className={`chips ${stale ? "stale" : ""}`} title={stale ? "the last good build (the latest one failed)" : undefined}>
                   {stale && <span className="stale-note">last good{build?.lastGood ? ` · rev ${build.lastGood.rev}` : ""}</span>}
-                  <span>{report.size_mm.map((x) => x.toFixed(1)).join(" × ")} mm</span>
-                  <span>{(report.volume_mm3 / 1000).toFixed(1)} cm³</span>
+                  <span>{fmtSize(report.size_mm, units)}</span>
+                  <span>{fmtVolume(report.volume_mm3, units)}</span>
+                  {reportUnits(report) !== units && (
+                    <span title={`The script's lengths are in ${UNIT_LABELS[reportUnits(report)]} (export const units)`}>script in {reportUnits(report)}</span>
+                  )}
                   <span>
                     {report.pieces} piece{report.pieces === 1 ? "" : "s"}, genus {report.genus}
                   </span>
@@ -834,8 +869,8 @@ export function Studio() {
                   [
                     ["edges", "edges", "B-rep edges (creases over 25°)"],
                     ["wireframe", "wire", "the mesh triangles"],
-                    ["grid", viewOpts.grid && gridStep ? `grid ${gridStep} mm` : "grid", "a ground grid sized to the part"],
-                    ["dims", "dims", "bounding-box dimensions, mm"],
+                    ["grid", viewOpts.grid && gridStep ? `grid ${fmtStep(gridStep, units)}` : "grid", "a ground grid sized to the part"],
+                    ["dims", "dims", `bounding-box dimensions, ${units}`],
                   ] as [keyof ViewerOptions, string, string][]
                 )
                   .filter(() => mode !== "renders")
@@ -898,6 +933,7 @@ export function Studio() {
               onBusyChange={onBusyChange}
               selection={sel}
               onSelectionChange={setSel}
+              units={units}
             />
           ) : (
             <p className="muted pad">The agent works on the selected part.</p>

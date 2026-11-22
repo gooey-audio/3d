@@ -1,6 +1,6 @@
 ---
 name: cad
-description: Write and edit parametric 3D parts as Replicad scripts (JavaScript on OpenCascade) and build them into validated STL + STEP with the gooey-3d CLI (gooey-audio/3d, `gooey-3d cad build|check|params`). Covers the script conventions (main, defaultParams, paramRanges, expect), parameter overrides, structured errors with script line numbers, exit codes, and the Replicad API basics. Use whenever you create or change a part script, need an STL/STEP of a part, or a cad build fails.
+description: Write and edit parametric 3D parts as Replicad scripts (JavaScript on OpenCascade) and build them into validated STL + STEP with the gooey-3d CLI (gooey-audio/3d, `gooey-3d cad build|check|params`). Covers the script conventions (main, units, defaultParams, paramRanges, expect), parameter overrides, structured errors with script line numbers, exit codes, and the Replicad API basics. Use whenever you create or change a part script, need an STL/STEP of a part, or a cad build fails.
 ---
 
 # Parametric parts with `gooey-3d cad`
@@ -29,6 +29,8 @@ gooey-3d render stl DIR/part.stl --out .context/part.png   # then LOOK at it
 Options:
 
 - `--set NAME=VALUE` overrides a parameter and can be repeated.
+- `--units in|cm|mm` sets the units of a script without `export const units`
+  (default `$GOOEY_UNITS`, else `in`).
 - `--allow-out-of-range` accepts values outside `paramRanges`.
 - `--timeout S` sets the build limit (default 30 s).
 - `--tolerance MM` sets the mesh tolerance.
@@ -51,8 +53,9 @@ writes nothing.
 ## 2. Script conventions
 
 ```js
-export const defaultParams = { length: 120, width: 40, holeDia: 5.5 };   // required (may be {})
-export const paramRanges = { length: [40, 300], width: [15, 120] };        // optional, numeric params
+export const units = "in";                                                // "in" | "cm" | "mm"
+export const defaultParams = { length: 4.75, width: 1.5, holeDia: 0.25 }; // required (may be {})
+export const paramRanges = { length: [1.5, 12], width: [0.5, 5] };         // optional, numeric params
 export const expect = { pieces: 1, genus: 4 };                             // optional
 // or: export const expect = (p) => ({ pieces: 1, genus: p.holes });
 
@@ -61,13 +64,22 @@ export function main(replicad, params) {   // or: main({ draw, makeCylinder }, p
 }
 ```
 
+- **Units.** Every number in the script is in its `units`: inches by default
+  (`"in"`), or `"cm"` / `"mm"`. Declare `units` in every script, so the part
+  does not change size if the default does (`--units`, `$GOOEY_UNITS`). The
+  worker scales the shape to millimetres before it is measured, so the STL,
+  STEP and `report.json` (`bounds`, `size_mm`, `volume_mm3`, the face table) are
+  always mm; `report.size` and `report.volume` and the printed summary are in
+  the script's units. Divide report mm by `mm_per_unit` (25.4 for inches) to get
+  script coordinates. Metric hardware is still metric: an M5 clearance hole in
+  an inch part is `5.5 / 25.4`.
 - `params` is `{...defaultParams, ...overrides}`. Unknown names fail (`params`).
   `--set` values are read as the default's type.
 - Use `import { ... } from "replicad"` at the top or destructure the first argument
   of `main`. No other imports: the script is copied to a temp directory, so relative
   imports do not resolve.
 - `console.log` goes to stderr; it is fine for debugging.
-- Write a frame comment at the top (units mm, Z up, where the origin is) and keep
+- Write a frame comment at the top (Z up, where the origin is) and keep
   dimensions as named params. Explicit frames make local edits reliable.
 - `expect` catches results that are valid but unintended: merged or broken-out
   holes, or a part cut into several pieces. Genus is the number of through-holes,
@@ -77,9 +89,10 @@ export function main(replicad, params) {   // or: main({ draw, makeCylinder }, p
 
 ## 3. The brace example
 
-[`fixtures/cad/brace.js`](../../fixtures/cad/brace.js) is a 120 × 40 × 8 mm brace.
-It has a sine top (spline profile), 1 mm fillets on the vertical corners and four
-M5 clearance holes inset 10 mm. It sets `expect = {pieces: 1, genus: 4}`.
+[`fixtures/cad/brace.js`](../../fixtures/cad/brace.js) is a 120 × 40 × 8 mm brace
+(`units = "mm"`: it is built around M5 hardware). It has a sine top (spline
+profile), 1 mm fillets on the vertical corners and four M5 clearance holes inset
+10 mm. It sets `expect = {pieces: 1, genus: 4}`.
 
 ```sh
 $ gooey-3d cad build fixtures/cad/brace.js --out out/brace
@@ -142,8 +155,8 @@ Ready-made drawings: `drawRectangle(w, h)`, `drawRoundedRectangle(w, h, r)`,
 - `.translate([dx,dy,dz])`, `.translateZ(dz)`
 - `.rotate(deg, [cx,cy,cz], [ax,ay,az])`, `.mirror("YZ")`
 
-A through hole is `part.cut(makeCylinder(d / 2, h + 2, [x, y, -1]))`. Over-length
-it by 1 mm at each end so no skin is left.
+A through hole is `part.cut(makeCylinder(d / 2, h + 2 * e, [x, y, -e]))`. Over-length
+it by a little at each end (`e` = 0.05 in or 1 mm) so no skin is left.
 
 **Edges and faces with finders.** The callback receives a fresh finder:
 
@@ -173,7 +186,7 @@ seams of holes once they exist. Fillet before drilling, or narrow the finder.
    the frame.
 3. Run `gooey-3d cad check part.js`. Fix errors at the reported line.
 4. Run `gooey-3d cad build part.js --out DIR`. Check `report.json`: `genus`,
-   `pieces`, `volume_mm3`, `bounds`, and the `faces` table (per face: `type` such as `plane`,
+   `pieces`, `size` (script units), `bounds` (mm), and the `faces` table (mm) (per face: `type` such as `plane`,
    `cylinder` or `extrusion`, `center` and unit `normal`) to confirm features moved
    where you meant.
 5. Run `gooey-3d render stl DIR/part.stl --out .context/part.png` and **look at

@@ -101,13 +101,23 @@ where "add M5 holes" or "fillet these edges" is an edit to the program.
 gooey-3d cad build fixtures/cad/brace.js --out out/brace               # brace.stl, brace.step, report.json
 gooey-3d cad build fixtures/cad/brace.js --out out/b140 --set length=140
 gooey-3d cad check fixtures/cad/brace.js --set filletR=3                # build + validate, keep nothing
-gooey-3d cad params fixtures/cad/brace.js                               # defaultParams, paramRanges
+gooey-3d cad params fixtures/cad/brace.js                               # defaultParams, paramRanges, units
+gooey-3d cad check part.js --units cm                                   # an undeclared script read as cm
 ```
 
 A script exports `main(replicad, params)` returning a solid, `defaultParams`, and
 optionally `paramRanges = {name: [min, max]}` and `expect = {pieces, genus}` (or a
 function of the params). See [`fixtures/cad/brace.js`](fixtures/cad/brace.js) and
 [`skill/cad/SKILL.md`](skill/cad/SKILL.md).
+
+**Units.** A script's numbers are in the unit it declares with
+`export const units = "in"` (or `"cm"`, `"mm"`). Scripts without one use `--units`,
+else `$GOOEY_UNITS`, else **inches**. The worker scales the shape to millimetres
+before anything is measured, so the STL, the STEP and `report.json` (`bounds`,
+`size_mm`, `volume_mm3`, `faces`, tolerances) are always mm; the report adds
+`units`, `mm_per_unit`, and `size` / `volume` in the script's units, which the
+printed summary uses. Printability stays in mm (nozzles, beds and walls are
+metric in slicers). `fixtures/cad/brace.js` declares `"mm"` (M5 hardware).
 
 What a build checks:
 
@@ -166,7 +176,7 @@ $ gooey-3d cad serve
 {"id":1,"op":"build","script":"brace.js","params":{"length":140},"out":"out/b140","step":false}
 {"id":1,"ok":true,"outputs":{"stl":"out/b140/brace.stl","step":null,"report":"out/b140/report.json"},"report":{...}}
 {"id":2,"op":"params","script":"brace.js"}
-{"id":2,"ok":true,"defaultParams":{...},"paramRanges":{...}}
+{"id":2,"ok":true,"defaultParams":{...},"paramRanges":{...},"units":"mm"}
 ```
 
 A build answers what `cad build --json` prints (no `out`: validate only, like

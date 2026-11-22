@@ -37,6 +37,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::Stream;
+use gooey_cad::Units;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_stream::StreamExt;
@@ -147,26 +148,52 @@ struct NewPart {
     source: Option<String>,
 }
 
-const TEMPLATE: &str = r#"// New part. Units: mm, Z up.
+/// The script of a new part, in `units` (the studio's: `$GOOEY_UNITS`, else inches).
+fn template(units: Units) -> String {
+    let label = match units {
+        Units::In => "inches",
+        Units::Cm => "centimetres",
+        Units::Mm => "millimetres",
+    };
+    let (p, r): ([f64; 4], [[f64; 2]; 4]) = match units {
+        Units::In => (
+            [1.5, 1.25, 0.375, 0.0625],
+            [[0.25, 12.0], [0.25, 12.0], [0.05, 4.0], [0.0, 0.375]],
+        ),
+        Units::Cm => (
+            [4.0, 3.0, 1.0, 0.2],
+            [[0.5, 30.0], [0.5, 30.0], [0.1, 10.0], [0.0, 1.0]],
+        ),
+        Units::Mm => (
+            [40.0, 30.0, 10.0, 2.0],
+            [[5.0, 300.0], [5.0, 300.0], [1.0, 100.0], [0.0, 10.0]],
+        ),
+    };
+    format!(
+        r#"// New part. Z up; all lengths in {label}.
+export const units = "{units}";
 
-export const defaultParams = {
-  width: 40,
-  depth: 30,
-  height: 10,
-  radius: 2,
-};
+export const defaultParams = {{
+  width: {},
+  depth: {},
+  height: {},
+  radius: {},
+}};
 
-export const paramRanges = {
-  width: [5, 300],
-  depth: [5, 300],
-  height: [1, 100],
-  radius: [0, 10],
-};
+export const paramRanges = {{
+  width: [{}, {}],
+  depth: [{}, {}],
+  height: [{}, {}],
+  radius: [{}, {}],
+}};
 
-export function main({ drawRoundedRectangle }, p) {
+export function main({{ drawRoundedRectangle }}, p) {{
   return drawRoundedRectangle(p.width, p.depth, p.radius).sketchOnPlane("XY").extrude(p.height);
+}}
+"#,
+        p[0], p[1], p[2], p[3], r[0][0], r[0][1], r[1][0], r[1][1], r[2][0], r[2][1], r[3][0], r[3][1],
+    )
 }
-"#;
 
 async fn create_part(State(app): S, Json(req): Json<NewPart>) -> R<Json<Value>> {
     if !valid_part(&req.name) {
@@ -176,7 +203,10 @@ async fn create_part(State(app): S, Json(req): Json<NewPart>) -> R<Json<Value>> 
     if path.exists() {
         return Err(err(StatusCode::CONFLICT, format!("{}.js exists", req.name)));
     }
-    crate::write_atomic(&path, req.source.as_deref().unwrap_or(TEMPLATE).as_bytes())?;
+    let source = req
+        .source
+        .unwrap_or_else(|| template(Units::from_env().unwrap_or_default()));
+    crate::write_atomic(&path, source.as_bytes())?;
     app.emit(json!({"type": "parts"}));
     app.touch(&req.name)?;
     Ok(Json(json!({"name": req.name})))

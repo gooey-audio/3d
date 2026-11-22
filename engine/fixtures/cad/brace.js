@@ -1,9 +1,10 @@
 // Flat brace with a wavy top and four clearance holes.
-// Units: mm. Frame: centred on the origin in X/Y, bottom face on Z = 0,
+// Frame: centred on the origin in X/Y, bottom face on Z = 0,
 // length along X, width along Y, height along Z.
 //
 //   gooey-3d cad build fixtures/cad/brace.js --out out/brace [--set length=140]
 
+export const units = "mm"; // metric hardware (M5)
 export const defaultParams = {
   length: 120, // X
   width: 40, // Y

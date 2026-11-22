@@ -2,6 +2,7 @@
 export const defaultParams = { gap: 5, count: 2 };
 export const paramRanges = { gap: [1, 50], count: [1, 3] };
 export const expect = (p) => ({ pieces: p.count, genus: 0 });
+export const units = "mm";
 
 export function main({ makeBox }, p) {
   const boxes = [];
