@@ -14,13 +14,14 @@ import { MAX_STEPS, type ChatMessage, type ChatMeta } from "@/lib/agent-shared";
 import { isModel, modelLabel, resolveModel } from "@/lib/models";
 import { errorText, mergeHistory, parseSelection, parseUserMessage, prepareHistory } from "@/lib/agent-chat";
 import * as store from "@/lib/store";
+import { parseUnits } from "@/lib/units";
 
 export const maxDuration = 300;
 
 const bad = (status: number, error: string) => Response.json({ error }, { status });
 
 export async function POST(req: Request) {
-  let body: { part?: unknown; model?: unknown; message?: unknown };
+  let body: { part?: unknown; model?: unknown; message?: unknown; units?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -63,7 +64,7 @@ export async function POST(req: Request) {
     // this turn only (not stored).
     const last = modelMessages[modelMessages.length - 1];
     if (last?.role === "user") {
-      const ctx = { type: "text" as const, text: await context(part, parseSelection(message.metadata?.selection)) };
+      const ctx = { type: "text" as const, text: await context(part, parseSelection(message.metadata?.selection), parseUnits(body.units) ?? undefined) };
       last.content = typeof last.content === "string" ? [ctx, { type: "text", text: last.content }] : [ctx, ...last.content];
     }
   } catch (e) {

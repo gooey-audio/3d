@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, sha256, subscribe, type BuildSummary, type Finish, type Info, type PartData } from "./api";
+import { api, fmtSize, fmtVolume, sha256, subscribe, type BuildSummary, type Finish, type Info, type PartData } from "./api";
 import { Editor } from "./Editor";
 import { Chat, applyAgentEvent, fromStored, type TurnView } from "./Chat";
 import { Look, Params } from "./Panels";
@@ -327,8 +327,8 @@ export function App() {
           <div className="overlay">
             {report && (
               <div className="chips">
-                <span>{report.size_mm.map((x) => x.toFixed(1)).join(" × ")} mm</span>
-                <span>{(report.volume_mm3 / 1000).toFixed(1)} cm³</span>
+                <span>{fmtSize(report)}</span>
+                <span>{fmtVolume(report)}</span>
                 <span>
                   {report.pieces} piece{report.pieces === 1 ? "" : "s"}, genus {report.genus}
                 </span>

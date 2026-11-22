@@ -1,5 +1,6 @@
 // Face selection: B-rep faces picked in the viewer and handed to the agent as context.
 // Shared by the viewer (components/studio), the chat panel and the chat route.
+import { fromMm, type Units } from "./units";
 
 /** One row of report.faces (engine/crates/cad/src/lib.rs `Face`): the B-rep face and the
  *  STL triangles `start..start+count` that tessellate it, in mesh.stl order. */
@@ -12,7 +13,7 @@ export type Face = {
   normal: number[];
 };
 
-/** A picked face, in part coordinates (mm, Z up, as in the script). `point` is where it
+/** A picked face, in part coordinates (mm, Z up; the script's frame, scaled to mm). `point` is where it
  *  was clicked. `rev` is the build the face index belongs to: indices are only stable for
  *  a fixed topology. */
 export type FaceSelection = {
@@ -30,10 +31,11 @@ export function faceOfTriangle(faces: Face[], triangle: number): Face | undefine
   return faces.find((f) => triangle >= f.start && triangle < f.start + f.count);
 }
 
-/** How the selection reads in the agent's context. */
-export function describeSelection(sel: FaceSelection[]): string {
-  const r = (v: number[]) => `[${v.map((x) => +x.toFixed(2)).join(", ")}]`;
+/** How the selection reads in the agent's context: positions in the script's `units`. */
+export function describeSelection(sel: FaceSelection[], units: Units = "mm"): string {
+  const d = units === "mm" ? 2 : 4;
+  const r = (v: number[], scale = true) => `[${v.map((x) => +(scale ? fromMm(x, units) : x).toFixed(scale ? d : 2)).join(", ")}]`;
   return sel
-    .map((s) => `face ${s.face} (${s.type}) center ${r(s.center)} normal ${r(s.normal)}, clicked at ${r(s.point)} (build rev ${s.rev})`)
+    .map((s) => `face ${s.face} (${s.type}) center ${r(s.center)} normal ${r(s.normal, false)}, clicked at ${r(s.point)} (build rev ${s.rev})`)
     .join("\n");
 }

@@ -7,6 +7,7 @@
 //
 // Script conventions (all but `main` optional):
 //   export function main(replicad, params) -> shape | shape[] | {shape}
+//   export const units = "in" | "cm" | "mm"   (the script's length unit; else the host's default)
 //   export const defaultParams = { name: value, ... }
 //   export const paramRanges = { name: [min, max], ... }   (numeric params only)
 //   export const expect = { pieces, genus }  or  (params) => ({ pieces, genus })
@@ -35,8 +36,35 @@ export type ScriptModule = {
   defaultParams?: Params;
   paramRanges?: Record<string, unknown>;
   expect?: unknown;
+  units?: unknown;
   [key: string]: unknown;
 };
+
+// ------------------------------------------------------------------ units
+
+/** Length units a script can be written in. Outputs (STL, STEP, report) are always mm. */
+export const MM_PER_UNIT = { in: 25.4, cm: 10, mm: 1 } as const;
+export type Units = keyof typeof MM_PER_UNIT;
+export const DEFAULT_UNITS: Units = "in";
+
+const UNIT_ALIASES: Record<string, Units> = {
+  in: "in", inch: "in", inches: "in", '"': "in",
+  cm: "cm", centimeter: "cm", centimeters: "cm", centimetre: "cm", centimetres: "cm",
+  mm: "mm", millimeter: "mm", millimeters: "mm", millimetre: "mm", millimetres: "mm",
+};
+
+/** A unit name (or alias) as a `Units`, or null. */
+export function parseUnits(v: unknown): Units | null {
+  return typeof v === "string" ? (UNIT_ALIASES[v.trim().toLowerCase()] ?? null) : null;
+}
+
+/** The script's `units` export, else `fallback` (the host's default). */
+export function scriptUnits(module: ScriptModule, fallback: Units = DEFAULT_UNITS): Units {
+  if (module.units === undefined || module.units === null) return fallback;
+  const u = parseUnits(module.units);
+  if (!u) throw new ScriptError(`\`units\` must be "in", "cm" or "mm", got ${JSON.stringify(module.units)}`);
+  return u;
+}
 
 export type Prepared = { tempPath: string; scriptPath: string };
 export type Loaded = Prepared & { module: ScriptModule };

@@ -2,6 +2,7 @@
 import type { BuildSummary, CadError, CheckpointInfo, PartInfo, RenderJob, Upload } from "@/lib/store";
 import type { Face } from "@/lib/selection";
 import type { Resolved, Scene } from "@/lib/scene";
+import type { Units } from "@/lib/units";
 
 export type { BuildSummary, CadError, CheckpointInfo, Face, PartInfo, RenderJob, Upload, Resolved, Scene };
 
@@ -9,6 +10,10 @@ export type Checkpoint = { id: string; at: number; script: string | null; scene:
 
 export type Report = {
   params: Record<string, unknown>;
+  /** The script's units (`size` is in them); absent on reports from before units (mm). */
+  units?: string;
+  size?: [number, number, number];
+  /** Always mm, whatever the script's units. */
   size_mm: [number, number, number];
   volume_mm3: number;
   pieces: number;
@@ -57,7 +62,7 @@ const p = (part: string) => `/api/parts/${encodeURIComponent(part)}`;
 
 export const api = {
   parts: () => call<PartInfo[]>("GET", "/api/parts"),
-  createPart: (name: string) => call<{ name: string }>("POST", "/api/parts", { name }),
+  createPart: (name: string, units?: Units) => call<{ name: string }>("POST", "/api/parts", { name, units }),
   deletePart: (part: string) => call<{ ok: boolean }>("DELETE", p(part)),
   part: (part: string) => call<PartData>("GET", p(part)),
   putScript: (part: string, source: string, base_sha: string | null) =>

@@ -202,8 +202,12 @@ meaningful dimensions as parameters.
 - Every script or parameter change rebuilds and validates the part and returns the result. If a \
 build fails, read the error kind, message and line, fix the cause, and try again. Do not stop on a \
 failed build unless you explain why you cannot fix it.
-- Units are millimetres. The part frame is Z up (CAD convention); it is shown resting on a ground \
-plane.
+- Units: the script declares its length unit, `export const units = \"in\"` (or \"cm\" or \"mm\"), \
+and every length in it is in that unit; scripts without one are inches (or `$GOOEY_UNITS`). Keep \
+the declaration; never change it to rescale a part. A build's `size` and `volume` are in the \
+script's units; `size_mm`, `volume_mm3`, `bounds` and the files are always mm. Give the user \
+dimensions in the script's units. The part frame is Z up (CAD convention); it is shown resting \
+on a ground plane.
 - Use set_params to change parameter values; use edit_script to change defaults, ranges or the \
 geometry itself.
 - Change the look with update_scene (a JSON merge patch over the scene document). The scene's \
