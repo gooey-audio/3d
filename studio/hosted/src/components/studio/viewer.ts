@@ -21,6 +21,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { toCreasedNormals } from "three/addons/utils/BufferGeometryUtils.js";
 import type { Resolved } from "@/lib/scene";
+import { makeBanana } from "./banana";
 import type { Face, FaceSelection } from "@/lib/selection";
 import { DEFAULT_UNITS, fmtLength, niceStep, type Units } from "@/lib/units";
 import type { PrintMarks } from "./printability";
@@ -28,10 +29,12 @@ import type { PrintMarks } from "./printability";
 export type Vec3 = [number, number, number];
 /** A click on a face, in part coordinates (mm, Z up). `normal` is the clicked triangle's. */
 export type Pick = { face: Face; point: Vec3; normal: Vec3 };
-export type ViewerOptions = { edges: boolean; wireframe: boolean; grid: boolean; dims: boolean };
+export type ViewerOptions = { edges: boolean; wireframe: boolean; grid: boolean; dims: boolean; banana: boolean };
 export type ViewerEvents = {
   /** A click on a face (`pick`) or on empty space (`null`); `additive`: shift was held. */
   onPick?: (pick: Pick | null, additive: boolean) => void;
+  /** The user started turning or panning the camera. */
+  onOrbitStart?: () => void;
 };
 
 /** Viewer (Y up) to part (Z up) coordinates: the inverse of rotateX(-90 degrees). */
@@ -92,14 +95,19 @@ export class Viewer {
   private selMesh: THREE.Mesh;
 
   // Toggles.
-  private options: ViewerOptions = { edges: false, wireframe: false, grid: false, dims: false };
+  private options: ViewerOptions = { edges: false, wireframe: false, grid: false, dims: false, banana: false };
   private edges: THREE.LineSegments | null = null;
   private wire: THREE.Mesh;
   private grid: THREE.GridHelper | null = null;
   private box = new THREE.Box3();
   private boxHelper: THREE.Box3Helper;
+  private banana: THREE.Mesh | null = null;
+  /** What the camera frames, the ground and the shadows cover: the part, plus the banana. */
+  private bounds = new THREE.Sphere(new THREE.Vector3(), 50);
   /** Grid spacing (mm) for the current part: a round number in `units`. */
   gridStep = 0;
+  /** Face hover and picking (off while the preview frames renders). */
+  private picking = true;
   /** The units labels, dimensions and the grid are in. */
   private units: Units = DEFAULT_UNITS;
 
@@ -196,7 +204,7 @@ export class Viewer {
       const d = this.down;
       this.down = null;
       this.hoverDirty = true;
-      if (!d || e.button !== 0 || Math.hypot(e.clientX - d.x, e.clientY - d.y) >= CLICK_SLOP_PX) return;
+      if (!d || !this.picking || e.button !== 0 || Math.hypot(e.clientX - d.x, e.clientY - d.y) >= CLICK_SLOP_PX) return;
       this.click(e.clientX, e.clientY, e.shiftKey);
     });
     canvas.addEventListener("pointermove", (e) => {
@@ -208,6 +216,7 @@ export class Viewer {
       this.pointer = null;
       this.setHover(null);
     });
+    this.controls.addEventListener("start", () => this.events.onOrbitStart?.());
     this.controls.addEventListener("change", () => {
       if (this.saveTimer === undefined) this.saveTimer = window.setTimeout(() => this.saveCamera(), 300);
     });
@@ -221,7 +230,7 @@ export class Viewer {
       this.frame = requestAnimationFrame(loop);
       this.controls.update();
       this.updateRig();
-      if (this.hoverDirty && this.pointer && !this.down) {
+      if (this.hoverDirty && this.pointer && !this.down && this.picking) {
         this.hoverDirty = false;
         const hit = this.raycast(this.pointer.x, this.pointer.y);
         this.setHover(hit ? this.faceAt(hit.faceIndex) : null);
@@ -281,17 +290,6 @@ export class Viewer {
     this.box.copy(geom.boundingBox!);
     this.radius = sphere.radius;
     this.center.copy(sphere.center);
-    const minY = geom.boundingBox!.min.y;
-    this.ground.position.set(sphere.center.x, minY - this.radius * 0.001, sphere.center.z);
-    this.ground.scale.setScalar(this.radius * 40);
-    this.camera.near = this.radius / 100;
-    this.camera.far = this.radius * 200;
-    this.camera.updateProjectionMatrix();
-    const s = this.shadowLight.shadow.camera as THREE.OrthographicCamera;
-    Object.assign(s, { left: -this.radius * 2, right: this.radius * 2, top: this.radius * 2, bottom: -this.radius * 2 });
-    s.near = 0.01;
-    s.far = this.radius * 12;
-    s.updateProjectionMatrix();
     this.updateGrid();
     this.applyOptions();
     this.updateMarks();
@@ -376,8 +374,16 @@ export class Viewer {
   }
 
   setOptions(o: Partial<ViewerOptions>) {
+    const banana = this.options.banana;
     Object.assign(this.options, o);
     this.applyOptions();
+    // Showing or hiding the banana changes what there is to frame: refit, keeping the angle.
+    if (this.mesh && this.options.banana !== banana) {
+      const d = this.camera.position.clone().sub(this.controls.target);
+      const last = this.lastDirection; // "reset view" keeps the look's direction
+      if (d.lengthSq() > 0) this.frameView([d.x, d.y, d.z]);
+      this.lastDirection = last;
+    }
   }
 
   private applyOptions() {
@@ -396,6 +402,41 @@ export class Viewer {
     if (this.grid) this.grid.visible = o.grid && has;
     this.boxHelper.visible = o.dims && has;
     if (!(o.dims && has)) this.hide(...this.dimLabels);
+    if (o.banana && has && !this.banana) {
+      this.banana = makeBanana();
+      this.scene.add(this.banana);
+    }
+    if (this.banana) this.banana.visible = o.banana && has;
+    this.updateBounds();
+  }
+
+  /** Lays the banana beside the part (on its left, along the depth) and sizes the framing
+   *  sphere, ground, clipping planes and shadow camera to what is shown. */
+  private updateBounds() {
+    const b = this.bounds.set(this.center, this.radius);
+    if (this.banana?.visible) {
+      const bb = this.banana.geometry.boundingBox!;
+      const size = this.box.getSize(new THREE.Vector3());
+      const gap = Math.max(20, 0.15 * Math.max(size.x, size.z));
+      // On the part's left (-X; the default view is from the front right, so it does not hide
+      // the part), long axis along the depth, its belly toward the part.
+      this.banana.rotation.y = -Math.PI / 2;
+      const half = (bb.max.z - bb.min.z) / 2;
+      this.banana.position.set(this.box.min.x - gap - half, this.box.min.y, this.box.getCenter(new THREE.Vector3()).z);
+      this.banana.updateMatrixWorld();
+      b.union(this.banana.geometry.boundingSphere!.clone().applyMatrix4(this.banana.matrixWorld));
+    }
+    const r = b.radius;
+    this.ground.position.set(b.center.x, this.box.min.y - r * 0.001, b.center.z);
+    this.ground.scale.setScalar(r * 40);
+    this.camera.near = r / 100;
+    this.camera.far = r * 200;
+    this.camera.updateProjectionMatrix();
+    const s = this.shadowLight.shadow.camera as THREE.OrthographicCamera;
+    Object.assign(s, { left: -r * 2, right: r * 2, top: r * 2, bottom: -r * 2 });
+    s.near = 0.01;
+    s.far = r * 12;
+    s.updateProjectionMatrix();
   }
 
   /** Shows where the print issues are (null: hides them). Kept across meshes. */
@@ -671,17 +712,19 @@ export class Viewer {
 
   private lastDirection: [number, number, number] = [1.25, 0.8, 1.5];
 
-  /** Points the camera along `direction` (part toward camera, Y up) and fits the part. */
+  /** Points the camera along `direction` (part toward camera, Y up) and fits the part (and
+   *  the banana, when shown). */
   frameView(direction: [number, number, number]) {
     this.lastDirection = direction;
     const dir = new THREE.Vector3(...direction).normalize();
     // Fit the bounding sphere in the narrower of the vertical and horizontal fields of view.
     const half = THREE.MathUtils.degToRad(this.camera.fov) / 2;
     const narrow = Math.min(half, Math.atan(Math.tan(half) * this.camera.aspect));
-    const dist = (this.radius / Math.sin(narrow)) * (1 + PADDING);
-    this.controls.target.copy(this.center);
-    this.camera.position.copy(this.center).addScaledVector(dir, dist);
-    this.camera.lookAt(this.center);
+    const { center, radius } = this.bounds;
+    const dist = (radius / Math.sin(narrow)) * (1 + PADDING);
+    this.controls.target.copy(center);
+    this.camera.position.copy(center).addScaledVector(dir, dist);
+    this.camera.lookAt(center);
     this.controls.update();
   }
 
@@ -745,8 +788,8 @@ export class Viewer {
     const kaz = az + THREE.MathUtils.degToRad(key.az);
     const kel = THREE.MathUtils.degToRad(key.el);
     const d = new THREE.Vector3(Math.cos(kel) * Math.sin(kaz), Math.sin(kel), Math.cos(kel) * Math.cos(kaz));
-    this.shadowLight.position.copy(this.center).addScaledVector(d, this.radius * 6);
-    this.shadowLight.target.position.copy(this.center);
+    this.shadowLight.position.copy(this.bounds.center).addScaledVector(d, this.bounds.radius * 6);
+    this.shadowLight.target.position.copy(this.bounds.center);
   }
 
   /** Re-renders the studio environment with the rig turned to `az` (radians), at most
@@ -764,6 +807,18 @@ export class Viewer {
     this.scene.environment = this.studioEnv;
     this.scene.environmentRotation.set(0, 0, 0);
     old?.dispose();
+  }
+
+  setPicking(on: boolean) {
+    this.picking = on;
+    if (!on) this.setHover(null);
+  }
+
+  /** The camera's direction (part toward camera, Y up): a render `view`. */
+  cameraDirection(): Vec3 {
+    const d = this.camera.position.clone().sub(this.controls.target).normalize();
+    const r = (x: number) => Math.round(x * 1000) / 1000;
+    return [r(d.x), r(d.y), r(d.z)];
   }
 
   resetView() {
