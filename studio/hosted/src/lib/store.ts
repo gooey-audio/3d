@@ -19,7 +19,8 @@ export type BuildSummary = {
   overrides: Record<string, unknown>;
   report?: Record<string, unknown>;
   error?: CadError;
-  info?: { defaultParams: Record<string, unknown>; paramRanges: Record<string, [number, number]> } | null;
+  /** `units`: the script's (lengths in the params are in them); absent before units existed. */
+  info?: { defaultParams: Record<string, unknown>; paramRanges: Record<string, [number, number]>; units?: string } | null;
   at: number;
   /** On a failed build: the last good build (whose mesh and faces are still stored). */
   lastGood?: { rev: number; at: number; report?: Record<string, unknown> } | null;

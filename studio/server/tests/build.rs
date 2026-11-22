@@ -64,6 +64,6 @@ async fn builds_stay_warm_and_coalesce_to_the_newest_edit() {
         .unwrap();
     let bad = app.wait_build("brace", rev, Duration::from_secs(60)).await.unwrap();
     assert!(!bad.ok);
-    assert_eq!(bad.error.as_ref().unwrap().line, Some(35));
+    assert_eq!(bad.error.as_ref().unwrap().line, Some(36));
     assert_eq!(app.last_good("brace").unwrap().rev, last);
 }

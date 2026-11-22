@@ -12,7 +12,8 @@
 // part's attributes, drawn with one group per face's triangle range. A pointer that moved
 // 4 px or more between down and up was an orbit drag, not a click.
 //
-// Coordinates: the part is Z up (mm); the viewer turned it Y up by -90 degrees about X, so
+// Coordinates: the part is Z up (mm: meshes are always mm, whatever the script's units); the
+// labels, grid and dimensions are shown in the studio's units (`setUnits`). The viewer turned it Y up by -90 degrees about X, so
 // viewer (x, y, z) = part (x, z, -y), and part = viewer (x, -z, y).
 
 import * as THREE from "three";
@@ -21,6 +22,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { toCreasedNormals } from "three/addons/utils/BufferGeometryUtils.js";
 import type { Resolved } from "@/lib/scene";
 import type { Face, FaceSelection } from "@/lib/selection";
+import { DEFAULT_UNITS, fmtLength, niceStep, type Units } from "@/lib/units";
 import type { PrintMarks } from "./printability";
 
 export type Vec3 = [number, number, number];
@@ -96,8 +98,10 @@ export class Viewer {
   private grid: THREE.GridHelper | null = null;
   private box = new THREE.Box3();
   private boxHelper: THREE.Box3Helper;
-  /** Grid spacing (mm) for the current part. */
+  /** Grid spacing (mm) for the current part: a round number in `units`. */
   gridStep = 0;
+  /** The units labels, dimensions and the grid are in. */
+  private units: Units = DEFAULT_UNITS;
 
   // Labels: HTML over the canvas, placed every frame.
   private labels: HTMLDivElement;
@@ -344,12 +348,14 @@ export class Viewer {
       return;
     }
     this.pickAt = fromPart(last.point);
+    const u = this.units;
     const r = (v: number[], d: number) => `(${v.map((x) => fmt(x, d)).join(", ")})`;
+    const len = (v: number[]) => `(${v.map((x) => fmtLength(x, u)).join(", ")}) ${u}`;
     this.pickLabel.innerHTML = "";
     const lines = [
       [`face ${last.face}`, ` · ${last.type.toLowerCase()}${sel.length > 1 ? ` · ${sel.length} selected` : ""}`],
-      ["at", ` ${r(last.point, 1)} mm`],
-      ["centre", ` ${r(last.center, 1)}`],
+      ["at", ` ${len(last.point)}`],
+      ["centre", ` ${len(last.center)}`],
       ["normal", ` ${r(last.normal, 3)}`],
     ];
     for (const [k, v] of lines) {
@@ -357,6 +363,16 @@ export class Viewer {
       row.append(el("b", "", k), document.createTextNode(v));
       this.pickLabel.appendChild(row);
     }
+  }
+
+  /** Shows labels, dimensions and the grid in `u`. */
+  setUnits(u: Units) {
+    if (u === this.units) return;
+    this.units = u;
+    if (this.mesh) this.updateGrid();
+    this.applyOptions();
+    this.setSelection(this.selection);
+    this.updateMarks();
   }
 
   setOptions(o: Partial<ViewerOptions>) {
@@ -448,6 +464,7 @@ export class Viewer {
     const ctr = b.getCenter(new THREE.Vector3());
     const pad = Math.max(size.x, size.z) * 0.08 + 2;
     const onTop = { depthTest: false, depthWrite: false, transparent: true, toneMapped: false };
+    const u = this.units;
     for (const [z0, z1] of m.thin) {
       // A band over the footprint from half a layer below the first thin section to half
       // above the last, outlined top and bottom.
@@ -466,8 +483,8 @@ export class Viewer {
       );
       rim.position.copy(band.position);
       this.markGroup.add(band, rim);
-      const z = z0 === z1 ? fmt(z0, 1) : `${fmt(z0, 1)}–${fmt(z1, 1)}`;
-      label(new THREE.Vector3(ctr.x + w / 2, hi, ctr.z + d / 2), `thin at z ${z}`);
+      const z = z0 === z1 ? fmtLength(z0, u) : `${fmtLength(z0, u)}–${fmtLength(z1, u)}`;
+      label(new THREE.Vector3(ctr.x + w / 2, hi, ctr.z + d / 2), `thin at z ${z} ${u}`);
     }
     for (const p of m.posts) {
       const at = fromPart([p.at[0], p.at[1], 0]);
@@ -477,17 +494,18 @@ export class Viewer {
         new THREE.LineBasicMaterial({ color: 0xf04848, ...onTop }),
       );
       this.markGroup.add(line);
-      label(top, `post ${fmt(p.height, 1)} × ${fmt(p.width, 1)} mm`);
+      label(top, `post ${fmtLength(p.height, u)} × ${fmtLength(p.width, u)} ${u}`);
     }
   }
 
-  /** A grid on the ground, about ten cells across the part's footprint (1/2/5 x 10^n mm). */
+  /** A grid on the ground, about ten cells across the part's footprint (1/2/5 x 10^n of the
+   *  unit, or 1/16 .. 1/2 in). */
   private updateGrid() {
     this.grid?.geometry.dispose();
     this.grid?.removeFromParent();
     const size = this.box.getSize(new THREE.Vector3());
     const foot = Math.max(size.x, size.z, 1e-3);
-    const step = niceStep(foot / 10);
+    const step = niceStep(foot / 10, this.units);
     const extent = Math.ceil((foot * 1.6) / step / 2) * 2 * step;
     this.grid = new THREE.GridHelper(extent, Math.round(extent / step), 0x6b7385, 0x3c414b);
     Object.assign(this.grid.material, { transparent: true, opacity: 0.6, depthWrite: false });
@@ -573,9 +591,9 @@ export class Viewer {
       const y0 = cam.y >= b.min.y ? b.min.y : b.max.y;
       const size = b.getSize(new THREE.Vector3());
       const spots: [THREE.Vector3, string][] = [
-        [new THREE.Vector3(c.x, y0, zs), `X ${fmt(size.x, 1)}`],
-        [new THREE.Vector3(xs, y0, c.z), `Y ${fmt(size.z, 1)}`],
-        [new THREE.Vector3(xo, c.y, zs), `Z ${fmt(size.y, 1)}`],
+        [new THREE.Vector3(c.x, y0, zs), `X ${fmtLength(size.x, this.units)} ${this.units}`],
+        [new THREE.Vector3(xs, y0, c.z), `Y ${fmtLength(size.z, this.units)} ${this.units}`],
+        [new THREE.Vector3(xo, c.y, zs), `Z ${fmtLength(size.y, this.units)} ${this.units}`],
       ];
       spots.forEach(([v, text], i) => {
         if (this.dimLabels[i].textContent !== text) this.dimLabels[i].textContent = text;
@@ -786,12 +804,6 @@ function sharedView(g: THREE.BufferGeometry): THREE.BufferGeometry {
   v.boundingSphere = g.boundingSphere;
   v.boundingBox = g.boundingBox;
   return v;
-}
-
-function niceStep(x: number): number {
-  const p = 10 ** Math.floor(Math.log10(x));
-  const m = x / p;
-  return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
 }
 
 const fmt = (x: number, d: number) => (Math.abs(x) < 0.5 * 10 ** -d ? 0 : x).toFixed(d);

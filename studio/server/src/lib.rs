@@ -71,7 +71,8 @@ impl BuildResult {
         });
         if let Some(r) = &self.report {
             v["report"] = json!({
-                "params": r.params, "size_mm": r.size_mm, "bounds": r.bounds,
+                "params": r.params, "units": r.units, "size": r.size, "volume": r.volume,
+                "size_mm": r.size_mm, "bounds": r.bounds,
                 "volume_mm3": r.volume_mm3, "pieces": r.pieces, "genus": r.genus,
                 "triangles": r.triangles, "brep_faces": r.brep_faces, "closed": r.closed,
                 "printability": { "ok": r.printability.ok, "fails": r.printability.fails,

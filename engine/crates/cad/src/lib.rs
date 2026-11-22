@@ -33,6 +33,67 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const REPORT_SCHEMA: &str = "gooey-cad/report-v1";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The length unit a part script is written in (`export const units = "in"`).
+/// Scripts without one use [`Options::units`]: `$GOOEY_UNITS`, else inches.
+/// Outputs are always millimetres: the worker scales the shape before meshing,
+/// so STL, STEP, `bounds`, `size_mm`, `volume_mm3` and the face table are mm,
+/// and `size` / `volume` repeat them in the script's units.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Units {
+    #[default]
+    In,
+    Cm,
+    Mm,
+}
+
+/// The environment variable that sets the default [`Units`].
+pub const UNITS_ENV: &str = "GOOEY_UNITS";
+
+impl Units {
+    pub fn name(self) -> &'static str {
+        match self {
+            Units::In => "in",
+            Units::Cm => "cm",
+            Units::Mm => "mm",
+        }
+    }
+
+    pub fn mm_per_unit(self) -> f64 {
+        match self {
+            Units::In => 25.4,
+            Units::Cm => 10.0,
+            Units::Mm => 1.0,
+        }
+    }
+
+    /// `$GOOEY_UNITS` if set (an error if it is not a unit), else inches.
+    pub fn from_env() -> Result<Units, String> {
+        match std::env::var(UNITS_ENV) {
+            Ok(v) if !v.trim().is_empty() => v.parse().map_err(|e| format!("${UNITS_ENV}: {e}")),
+            _ => Ok(Units::default()),
+        }
+    }
+}
+
+impl std::str::FromStr for Units {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Units, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "in" | "inch" | "inches" => Ok(Units::In),
+            "cm" | "centimeter" | "centimeters" | "centimetre" | "centimetres" => Ok(Units::Cm),
+            "mm" | "millimeter" | "millimeters" | "millimetre" | "millimetres" => Ok(Units::Mm),
+            _ => Err(format!("unknown units {s:?} (in, cm or mm)")),
+        }
+    }
+}
+
+impl std::fmt::Display for Units {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Options {
     /// The worker to spawn; `None` = [`WorkerCommand::locate`].
@@ -44,6 +105,8 @@ pub struct Options {
     /// default's type by the worker.
     pub params: Map<String, Value>,
     pub allow_out_of_range: bool,
+    /// Units of scripts that do not declare `export const units`.
+    pub units: Units,
     /// Mesh tolerance (mm); `None` = max(0.01, 2e-5 × bounding-box diagonal).
     pub tolerance: Option<f64>,
     /// Write the STEP file too.
@@ -61,6 +124,9 @@ impl Default for Options {
             timeout: DEFAULT_TIMEOUT,
             params: Map::new(),
             allow_out_of_range: false,
+            // An invalid $GOOEY_UNITS falls back here; front ends call
+            // `Units::from_env` themselves to report it.
+            units: Units::from_env().unwrap_or_default(),
             tolerance: None,
             step: true,
             material: Material::Pla,
@@ -69,7 +135,7 @@ impl Default for Options {
     }
 }
 
-/// One B-rep face and its triangles in the STL (`start..start+count`).
+/// One B-rep face and its triangles in the STL (`start..start+count`), in mm.
 /// `face` indexes `shape.faces` (stable only for a fixed topology). `type` is
 /// `plane cylinder cone sphere torus bezier bspline revolution extrusion offset
 /// other`; `center` is the centre of mass, `normal` the outward unit normal at
@@ -112,8 +178,19 @@ pub struct Report {
     /// The script's file name and content hash.
     pub script: String,
     pub script_sha256: String,
-    /// Merged parameters the part was built with.
+    /// Merged parameters the part was built with (lengths in `units`).
     pub params: Map<String, Value>,
+    /// The script's length unit. `size` and `volume` are in it; everything
+    /// else (`bounds`, `size_mm`, `volume_mm3`, faces, the files) is mm.
+    #[serde(default = "mm_units")]
+    pub units: Units,
+    #[serde(default = "one")]
+    pub mm_per_unit: f64,
+    #[serde(default)]
+    pub size: [f64; 3],
+    /// `volume_mm3` in `units`³.
+    #[serde(default)]
+    pub volume: f64,
     pub expect: Option<Expect>,
     /// BRepCheck_Analyzer on the B-rep (worker).
     pub valid: bool,
@@ -139,6 +216,15 @@ pub struct Report {
     pub seconds: Map<String, Value>,
 }
 
+// Reports written before `units` existed are millimetres.
+fn mm_units() -> Units {
+    Units::Mm
+}
+
+fn one() -> f64 {
+    1.0
+}
+
 /// Files written by [`build`] with an output directory.
 #[derive(Clone, Debug)]
 pub struct Written {
@@ -150,23 +236,26 @@ pub struct Written {
 /// `defaultParams` and `paramRanges` of a script (spawns a worker).
 pub fn params(script: &Path, opts: &Options) -> Result<Value, CadError> {
     let mut w = spawn(opts).map_err(|e| e.in_file(&display_name(script)))?;
-    let res = params_with(&mut w, script, opts.timeout);
+    let res = params_with(&mut w, script, opts.units, opts.timeout);
     w.shutdown();
     res
 }
 
-/// `{defaultParams, paramRanges}` of a script, on an existing worker. Only loads
-/// the script, so it answers when `main` would fail.
-pub fn params_with(w: &mut Worker, script: &Path, timeout: Duration) -> Result<Value, CadError> {
+/// `{defaultParams, paramRanges, units}` of a script, on an existing worker. Only
+/// loads the script, so it answers when `main` would fail. `units` is the default
+/// for a script that does not declare its own.
+pub fn params_with(w: &mut Worker, script: &Path, units: Units, timeout: Duration) -> Result<Value, CadError> {
     let file = display_name(script);
     let abs = script_path(script).map_err(|e| e.in_file(&file))?;
     let mut req = Map::new();
     req.insert("op".into(), "params".into());
     req.insert("script".into(), abs.to_string_lossy().into_owned().into());
+    req.insert("units".into(), units.name().into());
     let res = w.request(req, timeout).map_err(|e| e.in_file(&file))?;
     Ok(json!({
         "defaultParams": res.get("defaultParams").cloned().unwrap_or(json!({})),
         "paramRanges": res.get("paramRanges").cloned().unwrap_or(json!({})),
+        "units": res.get("units").cloned().unwrap_or_else(|| units.name().into()),
     }))
 }
 
@@ -238,6 +327,7 @@ pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> 
     req.insert("op".into(), "build".into());
     req.insert("script".into(), abs.to_string_lossy().into_owned().into());
     req.insert("params".into(), Value::Object(opts.params.clone()));
+    req.insert("units".into(), opts.units.name().into());
     req.insert("allowOutOfRange".into(), opts.allow_out_of_range.into());
     req.insert("tolerance".into(), opts.tolerance.map_or(Value::Null, Value::from));
     let mut outputs = Map::new();
@@ -260,6 +350,11 @@ pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> 
             "OpenCascade's BRepCheck rejects the solid (often a fillet, chamfer or shell too large for its faces, or a self-intersecting profile)",
         )));
     }
+    let units: Units = match res.get("units") {
+        Some(u) => serde_json::from_value(u.clone()).map_err(|_| proto("well-formed `units`"))?,
+        None => return Err(proto("`units` (rebuild the cad-worker)")),
+    };
+    let per = units.mm_per_unit();
     let t_validate = Instant::now();
     let stl = std::fs::read(&stl_path).map_err(|e| fail(io_err(&stl_path, e)))?;
     let v = validate::validate(&stl, opts.material, opts.bed).map_err(fail)?;
@@ -285,9 +380,9 @@ pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> 
             return Err(fail(CadError::new(
                 ErrorKind::Expect,
                 format!(
-                    "expected {} (volume {:.1} mm³): holes merged or broke out, or the part split?",
+                    "expected {} (volume {}): holes merged or broke out, or the part split?",
                     wrong.join("; "),
-                    v.volume_mm3
+                    fmt_volume(v.volume_mm3, units)
                 ),
             )));
         }
@@ -322,6 +417,10 @@ pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> 
             Some(Value::Object(p)) => p.clone(),
             _ => return Err(proto("`params`")),
         },
+        units,
+        mm_per_unit: per,
+        size: [0, 1, 2].map(|k| round((hi[k] - lo[k]) / per, 4)),
+        volume: round(v.volume_mm3 / per.powi(3), 6),
         expect,
         valid: true,
         closed: v.closed,
@@ -398,6 +497,13 @@ fn display_name(script: &Path) -> String {
 
 fn io_err(path: &Path, e: std::io::Error) -> CadError {
     CadError::new(ErrorKind::Io, format!("{}: {e}", path.display()))
+}
+
+/// A volume given in mm³, in `units`³ ("2.3 in³", "37.6 cm³", "37633.1 mm³").
+pub fn fmt_volume(mm3: f64, units: Units) -> String {
+    let v = mm3 / units.mm_per_unit().powi(3);
+    let d = if units == Units::Mm { 1 } else { 3 };
+    format!("{v:.d$} {units}³")
 }
 
 fn round(x: f64, d: i32) -> f64 {

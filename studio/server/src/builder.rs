@@ -157,10 +157,12 @@ fn build(slot: &mut Option<Worker>, cmd: Option<&WorkerCommand>, req: &Request) 
         let mut q = Map::new();
         q.insert("op".into(), "params".into());
         q.insert("script".into(), req.script.to_string_lossy().into_owned().into());
+        q.insert("units".into(), opts.units.name().into());
         w.request(q, PARAMS_TIMEOUT).ok().map(|r| {
             serde_json::json!({
                 "defaultParams": r.get("defaultParams").cloned().unwrap_or_default(),
                 "paramRanges": r.get("paramRanges").cloned().unwrap_or_default(),
+                "units": r.get("units").cloned().unwrap_or_default(),
             })
         })
     } else {
