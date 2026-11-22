@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use gooey_cad::{ErrorKind, Options, Report, TempDir, Worker, WorkerCommand, build, build_with, params};
+use gooey_cad::{ErrorKind, Options, Report, TempDir, Units, Worker, WorkerCommand, build, build_with, params};
 use serde_json::Value;
 
 /// One worker at a time: each holds a few hundred MB.
@@ -291,6 +291,42 @@ fn broken_solids_and_wrong_expectations_fail() {
     let (r, _) = build(&script("two-boxes.js"), &opts, None).unwrap();
     assert_eq!((r.pieces, r.genus), (3, 0));
     assert_eq!(r.expect.unwrap().pieces, Some(3));
+}
+
+#[test]
+fn units_scale_scripts_to_millimetres() {
+    let Some((mut opts, _g)) = setup() else { return };
+    // Declared units win over the default; outputs are mm, `size` is in the script's units.
+    opts.units = Units::Cm;
+    let (r, _) = build(&script("inch-cube.js"), &opts, None).unwrap();
+    assert_eq!(r.units, Units::In);
+    assert_eq!(r.mm_per_unit, 25.4);
+    assert_eq!(r.size, [1.0, 2.0, 0.5]);
+    assert_eq!(r.size_mm, [25.4, 50.8, 12.7]);
+    assert_eq!((r.pieces, r.genus), (1, 1));
+    let hole = r.faces.iter().find(|f| f.surface == "cylinder").unwrap();
+    assert!(
+        hole.center[2] > 0.0 && hole.center[2] < 12.7,
+        "face table in mm: {:?}",
+        hole.center
+    );
+    let block_mm3 = 25.4 * 50.8 * 12.7;
+    assert!(
+        r.volume_mm3 < block_mm3 && r.volume_mm3 > 0.95 * block_mm3,
+        "{}",
+        r.volume_mm3
+    );
+    assert!((r.volume - r.volume_mm3 / 25.4f64.powi(3)).abs() < 1e-5);
+    // Undeclared scripts take `Options::units`.
+    let (r, _) = build(&script("cube.js"), &opts, None).unwrap();
+    assert_eq!((r.units, r.size, r.size_mm), (Units::Cm, [2.0; 3], [20.0; 3]));
+    opts.units = Units::In;
+    let (r, _) = build(&script("cube.js"), &opts, None).unwrap();
+    assert_eq!((r.units, r.size_mm), (Units::In, [50.8; 3]));
+    let p = params(&script("cube.js"), &opts).unwrap();
+    assert_eq!(p["units"], "in");
+    let p = params(&brace(), &opts).unwrap();
+    assert_eq!(p["units"], "mm");
 }
 
 #[test]

@@ -3,6 +3,7 @@
 // a scene merge patch, like the agent's.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FINISHES, type Resolved, type Scene } from "@/lib/scene";
+import { parseUnits, UNIT_LABELS } from "@/lib/units";
 import type { BuildSummary } from "./api";
 
 /** Calls `fn` once `ms` after the last call. */
@@ -40,8 +41,10 @@ export function Params({ info, overrides, built, disabled, onPatch }: ParamsProp
   // Overrides of parameters the script no longer has fail the build: offer to drop them.
   const unknown = Object.keys(overrides).filter((k) => !(k in info.defaultParams));
   if (!names.length && !unknown.length) return <p className="muted pad">The script has no parameters (export <code>defaultParams</code>).</p>;
+  const units = parseUnits(info.units);
   return (
     <div className="params">
+      {units && <p className="muted small">Lengths in {UNIT_LABELS[units]} (the script&rsquo;s <code>units</code>).</p>}
       {unknown.map((k) => (
         <div key={k} className="param unknown">
           <label title="not a parameter of the script">{k}</label>

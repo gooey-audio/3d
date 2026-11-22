@@ -2,6 +2,24 @@
 
 export type CadError = { kind: string; message: string; line?: number | null; column?: number | null };
 
+type Report = NonNullable<BuildSummary["report"]>;
+
+/** "1.5 × 1.25 × 0.375 in": the size in the script's units (mm for reports from before units). */
+export function fmtSize(r: Report): string {
+  const u = r.units ?? "mm";
+  const d = u === "in" ? 3 : u === "cm" ? 2 : 1;
+  const trim = (s: string) => (s.includes(".") ? s.replace(/\.?0+$/, "") : s);
+  return `${(r.size ?? r.size_mm).map((x) => trim(x.toFixed(d))).join(" × ")} ${u}`;
+}
+
+/** The volume in the script's units cubed. */
+export function fmtVolume(r: Report): string {
+  const u = r.units ?? "mm";
+  const v = r.volume ?? r.volume_mm3;
+  const d = v >= 100 ? 0 : v >= 10 ? 1 : v >= 1 ? 2 : 3;
+  return `${v.toFixed(d)} ${u}³`;
+}
+
 export type BuildSummary = {
   part: string;
   rev: number;
@@ -10,6 +28,10 @@ export type BuildSummary = {
   overrides: Record<string, unknown>;
   report?: {
     params: Record<string, unknown>;
+    /** The script's units; `size` and `volume` are in them, the *_mm fields are always mm. */
+    units?: "in" | "cm" | "mm";
+    size?: [number, number, number];
+    volume?: number;
     size_mm: [number, number, number];
     volume_mm3: number;
     pieces: number;

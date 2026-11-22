@@ -5,6 +5,7 @@ import { patchScene, type Scene } from "./scene";
 import * as store from "./store";
 import type { BuildSummary } from "./store";
 import type { Face } from "./selection";
+import { MM_PER_UNIT, reportUnits } from "./units";
 
 /** Builds the part's current script with its scene's parameter overrides, on Modal, and
  *  stores the summary (and the mesh when it succeeds). The last good mesh is kept on failure. */
@@ -66,11 +67,16 @@ export function describeBuild(b: BuildSummary, script?: string): Record<string, 
   if (b.ok && b.report) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- report-v1 JSON, read loosely
     const r = b.report as any;
+    // In the script's units: the numbers the model reads and writes.
+    const units = reportUnits(r);
+    const per = MM_PER_UNIT[units];
+    const d = units === "mm" ? 2 : 4;
     return {
       ok: true,
       rev: b.rev,
-      size_mm: r.size_mm,
-      volume_mm3: r.volume_mm3,
+      units,
+      size: (r.size_mm as number[]).map((x) => +(x / per).toFixed(d)),
+      volume: +(r.volume_mm3 / per ** 3).toPrecision(5),
       pieces: r.pieces,
       genus: r.genus,
       triangles: r.triangles,
