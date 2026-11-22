@@ -1,6 +1,7 @@
 "use client";
 // The hosted studio: part picker and build status; script | params | look on the left, the
-// three.js preview in the middle, the agent on the right; and the Renders page.
+// three.js preview in the middle, the agent on the right. Render mode keeps the preview and
+// swaps the sides for render settings and the part's renders (see Renders.tsx).
 //
 // Builds run remotely and take 1-3 s, so every request that builds gets a sequence number and
 // only the newest one's result is applied. Scene patches are applied to the preview at once
@@ -8,14 +9,30 @@
 // concurrent read-modify-writes on the server cannot lose a change.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatPanel } from "@/components/chat/ChatPanel";
-import { patchScene as applyPatch, resolve, type Scene } from "@/lib/scene";
+import { patchScene as applyPatch, resolve, viewDirection, type Scene } from "@/lib/scene";
 import type { Face, FaceSelection } from "@/lib/selection";
 import { DEFAULT_UNITS, fmtSize, fmtStep, fmtVolume, parseUnits, reportUnits, UNIT_LABELS, UNITS, UNITS_STORAGE_KEY, type Units } from "@/lib/units";
 import { api, ApiError, errorMessage, sha256, type BuildSummary, type PartInfo, type Report } from "./api";
 import { Editor } from "./Editor";
 import { History } from "./History";
 import { Look, Params } from "./Panels";
-import { Renders } from "./Renders";
+import {
+  cellInput,
+  DEFAULT_SETTINGS,
+  PREVIEW,
+  previewLook,
+  PreviewHud,
+  RenderGallery,
+  RenderPanel,
+  renderRequest,
+  RenderView,
+  settingsFromJob,
+  useRenderJobs,
+  viewOf,
+  type Cell,
+  type RenderSettings,
+  type View,
+} from "./Renders";
 import { Viewer, type Vec3, type ViewerOptions } from "./viewer";
 
 const AUTOSAVE_MS = 800;
@@ -61,9 +78,10 @@ export function Studio() {
   const [agentBusy, setAgentBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
   const [creating, setCreating] = useState<string | null>(null);
-  const [rendering, setRendering] = useState(false);
-  const [renderSelect, setRenderSelect] = useState<string | null>(null);
   const [renderNonce, setRenderNonce] = useState(0);
+  const [renderSettings, setRenderSettings] = useState<RenderSettings>(DEFAULT_SETTINGS);
+  const [openRender, setOpenRender] = useState<string | null>(null);
+  const [renderBusy, setRenderBusy] = useState(false);
   const [sel, setSel] = useState<FaceSelection[]>([]);
   const [viewOpts, setViewOpts] = useState<ViewerOptions>(NO_OPTIONS);
   const [gridStep, setGridStep] = useState(0);
@@ -90,6 +108,7 @@ export function Studio() {
   const buildSeq = useRef(0);
   const meshSeq = useRef(0);
   const sceneQ = useRef<{ busy: boolean; pending: Record<string, unknown> | null }>({ busy: false, pending: null });
+  const renders = useRenderJobs(mode === "renders", renderNonce);
 
   const select = useCallback((name: string | null) => {
     currentRef.current = name;
@@ -243,14 +262,23 @@ export function Studio() {
         return cur.some((c) => c.face === f.face) ? cur.filter((c) => c.face !== f.face) : [...cur, s];
       });
     };
+    // Turning the preview in render mode makes its angle the still's.
+    v.events.onOrbitStart = () => {
+      if (modeRef.current !== "renders") return;
+      setRenderSettings((s) => (s.kind === "still" && s.view !== PREVIEW ? { ...s, view: PREVIEW } : s));
+    };
     return () => {
       v.dispose();
     };
   }, []);
 
+  // Render mode: a clean preview (no face picking, selection or helpers).
   useEffect(() => {
-    viewer.current?.setSelection(sel);
-  }, [sel]);
+    viewer.current?.setSelection(mode === "renders" ? [] : sel);
+  }, [sel, mode]);
+  useEffect(() => {
+    viewer.current?.setPicking(mode !== "renders");
+  }, [mode]);
 
   // Viewer toggles, kept in localStorage (read after hydration).
   useEffect(() => {
@@ -263,8 +291,8 @@ export function Studio() {
     }
   }, []);
   useEffect(() => {
-    viewer.current?.setOptions(viewOpts);
-  }, [viewOpts]);
+    viewer.current?.setOptions(mode === "renders" ? NO_OPTIONS : viewOpts);
+  }, [viewOpts, mode]);
   // The units setting, kept in localStorage (read after hydration).
   useEffect(() => {
     const u = parseUnits(localStorage.getItem(UNITS_STORAGE_KEY));
@@ -347,12 +375,18 @@ export function Studio() {
       return { resolved: null, error: errorMessage(e) };
     }
   }, [scene]);
+  // Render mode shows the render settings' finish, light and background instead.
+  const renderLook = useMemo(() => (scene ? previewLook(renderSettings, scene) : null), [renderSettings, scene]);
   useEffect(() => {
     if (!look.resolved || !scene) return;
+    if (mode === "renders") {
+      viewer.current?.setLook(renderLook ?? look.resolved, false);
+      return;
+    }
     const view = JSON.stringify(scene.camera);
     viewer.current?.setLook(look.resolved, lastView.current !== view);
     lastView.current = view;
-  }, [look, scene]);
+  }, [look, scene, mode, renderLook]);
 
   // --- saving --------------------------------------------------------------------
   const save = useCallback(async () => {
@@ -415,7 +449,8 @@ export function Studio() {
         e.preventDefault();
         rebuildNow();
       } else if (e.key === "Escape") {
-        setSel((s) => (s.length ? [] : s));
+        if (modeRef.current === "renders") setOpenRender(null);
+        else setSel((s) => (s.length ? [] : s));
       }
     };
     window.addEventListener("keydown", key);
@@ -548,20 +583,68 @@ export function Studio() {
     }
   };
 
-  const renderPart = async () => {
-    if (!current) return;
-    setRendering(true);
+  // --- render mode -----------------------------------------------------------------------
+  const frame = useCallback((v: View) => {
+    if (v === PREVIEW) return;
     try {
-      await save();
-      const j = await api.renderPart(current);
-      setRenderSelect(j.id);
-      setRenderNonce((n) => n + 1);
-      setMode("renders");
-    } catch (e) {
-      setBanner({ text: errorMessage(e) });
-    } finally {
-      setRendering(false);
+      viewer.current?.frameView(viewDirection(v));
+    } catch {
+      /* not a view */
     }
+  }, []);
+
+  const queueRender = async (req: unknown) => {
+    setRenderBusy(true);
+    try {
+      const j = await renders.start(req);
+      renders.setErr(null);
+      return j;
+    } catch (e) {
+      renders.setErr(errorMessage(e));
+      return null;
+    } finally {
+      setRenderBusy(false);
+    }
+  };
+
+  const startRender = () => {
+    if (!current || !scene || !viewer.current) return;
+    const v = viewer.current;
+    queueRender(renderRequest(renderSettings, current, scene, () => v.cameraDirection()));
+  };
+
+  /** One tile of a sheet as an image, with the form's size and quality and the sheet's light. */
+  const renderTile = async (job: (typeof renders.jobs)[number], c: Cell) => {
+    const part = cellInput(job, c)?.part;
+    if (!part) return false;
+    const r = job.request as Record<string, unknown>;
+    const asked = (r.materials as unknown[] | undefined)?.length;
+    const material = asked && c.material ? (c.material.startsWith("{") ? JSON.parse(c.material) : c.material) : undefined;
+    const j = await queueRender({
+      kind: "still",
+      input: { part },
+      view: viewOf(c.view),
+      material,
+      width: renderSettings.width,
+      aspect: renderSettings.aspect,
+      spp: Math.max(renderSettings.spp, Number(r.spp ?? 0)),
+      background: r.background,
+      environment: r.environment,
+      exposure: r.exposure,
+      fov: r.fov,
+    });
+    return !!j;
+  };
+
+  /** Loads a render's (or a sheet tile's) settings into the form, on its part. */
+  const editRender = (job: (typeof renders.jobs)[number], c?: Cell) => {
+    const part = c ? cellInput(job, c)?.part : job.inputs[0]?.part;
+    if (!part) return;
+    const next = settingsFromJob(job, part === current ? scene : null, renderSettings, c);
+    setRenderSettings(next);
+    setOpenRender(null);
+    if (part !== current) select(part);
+    else frame(next.kind === "still" ? next.view : (next.views[0] ?? PREVIEW));
   };
 
   const signOut = async () => {
@@ -574,6 +657,7 @@ export function Studio() {
   const stale = !!build && !build.ok;
   const info = build?.info ?? lastInfo ?? null;
   const hasMesh = parts.find((p) => p.name === current)?.mesh ?? false;
+  const openJob = renders.jobs.find((j) => j.id === openRender) ?? null;
 
   return (
     <div className="app">
@@ -592,8 +676,8 @@ export function Studio() {
           <button className={mode === "editor" ? "on" : ""} onClick={() => setMode("editor")}>
             Editor
           </button>
-          <button className={mode === "renders" ? "on" : ""} onClick={() => setMode("renders")}>
-            Renders
+          <button className={mode === "renders" ? "on" : ""} onClick={() => setMode("renders")} title="Path-traced images of this part">
+            Render
           </button>
         </nav>
         {creating === null ? (
@@ -638,11 +722,6 @@ export function Studio() {
             </option>
           ))}
         </select>
-        {current && (
-          <button title="Path-trace a contact sheet of this part in its look (iso, front, side, top)" disabled={!hasMesh || rendering} onClick={renderPart}>
-            {rendering ? "Rendering…" : "Render"}
-          </button>
-        )}
         {current && (
           <a className="button" href={api.stepUrl(current)} download={`${current}.step`} title="Build with STEP output and download it">
             STEP
@@ -704,9 +783,24 @@ export function Studio() {
           </button>
         </div>
       )}
-      {mode === "renders" && <Renders parts={parts} select={renderSelect} onSelect={setRenderSelect} nonce={renderNonce} />}
-      <main className={mode === "renders" ? "hidden" : ""}>
-        <section className="left">
+      <main className={mode === "renders" ? "render-mode" : ""}>
+        {mode === "renders" && (
+          <section className="left">
+            <RenderPanel
+              part={current}
+              scene={scene}
+              hasMesh={hasMesh}
+              parts={parts}
+              settings={renderSettings}
+              onChange={setRenderSettings}
+              onFrame={frame}
+              onRender={startRender}
+              busy={renderBusy}
+              error={renders.err}
+            />
+          </section>
+        )}
+        <section className={`left ${mode === "renders" ? "hidden" : ""}`}>
           <nav className="tabs">
             {(["script", "params", "look"] as Tab[]).map((t) => (
               <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
@@ -744,11 +838,12 @@ export function Studio() {
             </div>
           )}
         </section>
-        <section className={`center ${scene?.background === "transparent" ? "checker" : ""}`}>
+        <section className={`center ${(mode === "renders" ? renderLook?.background : scene?.background) === "transparent" ? "checker" : ""}`}>
           <div className="viewer" ref={viewerHost} />
-          <div className="overlay">
+          <div className={`overlay ${mode === "renders" ? "rendering" : ""}`}>
             <div className="topbar">
-              {report && (
+              {mode === "renders" && scene && <PreviewHud settings={renderSettings} scene={scene} />}
+              {report && mode !== "renders" && (
                 <div className={`chips ${stale ? "stale" : ""}`} title={stale ? "the last good build (the latest one failed)" : undefined}>
                   {stale && <span className="stale-note">last good{build?.lastGood ? ` · rev ${build.lastGood.rev}` : ""}</span>}
                   <span>{fmtSize(report.size_mm, units)}</span>
@@ -778,19 +873,28 @@ export function Studio() {
                     ["dims", "dims", `bounding-box dimensions, ${units}`],
                     ["banana", "🍌", `a life-size banana (about ${units === "in" ? "7½ in" : "19 cm"}) beside the part, for scale`],
                   ] as [keyof ViewerOptions, string, string][]
-                ).map(([k, label, title]) => (
-                  <button key={k} className={viewOpts[k] ? "on" : ""} onClick={() => toggleView(k)} title={title} aria-pressed={viewOpts[k]}>
-                    {label}
-                  </button>
-                ))}
-                <span className="sep" />
-                <button className="reset-view" onClick={() => viewer.current?.resetView()}>
+                )
+                  .filter(() => mode !== "renders")
+                  .map(([k, label, title]) => (
+                    <button key={k} className={viewOpts[k] ? "on" : ""} onClick={() => toggleView(k)} title={title} aria-pressed={viewOpts[k]}>
+                      {label}
+                    </button>
+                  ))}
+                {mode !== "renders" && <span className="sep" />}
+                <button
+                  className="reset-view"
+                  onClick={() => {
+                    const v = renderSettings.kind === "still" ? renderSettings.view : PREVIEW;
+                    if (mode === "renders" && v !== PREVIEW) frame(v);
+                    else viewer.current?.resetView();
+                  }}
+                >
                   reset view
                 </button>
               </div>
             </div>
             {building && <div className="building-overlay">building…</div>}
-            {sel.length > 0 && (
+            {sel.length > 0 && mode !== "renders" && (
               <div className="sel-pill" title={sel.map((s) => `face ${s.face} (${s.type.toLowerCase()})`).join("\n") + "\nshift-click adds or removes; Esc clears"}>
                 {sel.length} face{sel.length === 1 ? "" : "s"} selected
                 <button onClick={() => setSel([])} title="clear the selection (Esc)" aria-label="clear the selection">
@@ -798,11 +902,31 @@ export function Studio() {
                 </button>
               </div>
             )}
-            {look.resolved?.material.finish && <div className="finish">{look.resolved.material.label ?? look.resolved.material.finish}</div>}
+            {look.resolved?.material.finish && mode !== "renders" && <div className="finish">{look.resolved.material.label ?? look.resolved.material.finish}</div>}
             {!current && <div className="empty muted">No parts yet: make one with New part.</div>}
           </div>
+          {mode === "renders" && openJob && (
+            <RenderView
+              key={openJob.id}
+              job={openJob}
+              scene={openJob.inputs[0]?.part === current ? scene : null}
+              settings={renderSettings}
+              onClose={() => setOpenRender(null)}
+              onDelete={(j) => {
+                setOpenRender(null);
+                renders.remove(j.id).catch((e) => renders.setErr(errorMessage(e)));
+              }}
+              onEdit={editRender}
+              onStill={renderTile}
+            />
+          )}
         </section>
-        <section className="right">
+        {mode === "renders" && (
+          <section className="right">
+            <RenderGallery part={current} scene={scene} jobs={renders.jobs} open={openRender} onOpen={setOpenRender} />
+          </section>
+        )}
+        <section className={`right ${mode === "renders" ? "hidden" : ""}`}>
           {current ? (
             <ChatPanel
               part={current}

@@ -14,7 +14,7 @@ API, Blob layout): [CONTRACT.md](CONTRACT.md).
 - `src/proxy.ts`: the password gate (every page and API route but `/login` and `POST /api/login`).
 - `src/app/api/`: parts (script, build, mesh, scene, STEP, revert, render), uploads, renders, and
   the agent chat (`api/chat`).
-- `src/components/studio/`: the UI (editor, params and look panels, viewer, Renders page).
+- `src/components/studio/`: the UI (editor, params and look panels, viewer, render mode).
 - `src/lib/`: server libraries shared by the routes and the agent: `scene.ts` (scene documents,
   materials; also used in the browser for an instant preview), `store.ts` (Blob), `modal.ts`
   (Modal client with a local fallback), `parts.ts`, `renders.ts`.
@@ -54,7 +54,7 @@ bun run dev                        # http://localhost:3000
 
 The local fallback runs `../../engine/target/release/gooey-3d` (override with `GOOEY_3D`), so
 build it first (`cargo build --release -p gooey-3d` in `engine/`, and the cad worker). Local
-renders run synchronously inside the request; on Modal they are queued and the Renders page
+renders run synchronously inside the request; on Modal they are queued and render mode
 polls every 2 s. Storage is always the real Blob store, so use throwaway part names when testing
 (for example `t-…`) and delete them afterwards.
 

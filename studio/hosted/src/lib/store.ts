@@ -43,7 +43,11 @@ export type RenderJob = {
   seconds?: number;
   adapter?: string;
   index?: unknown;
+  /** Who asked: the Renders page, the agent's render_sheet, or its look_at_part preview. */
+  source?: RenderSource;
 };
+
+export type RenderSource = "studio" | "agent" | "preview";
 
 export class StoreError extends Error {}
 

@@ -270,7 +270,7 @@ export function Look({ scene, resolved, error, disabled, onPatch }: LookProps) {
   );
 }
 
-function linearToHex(c: [number, number, number]): string {
+export function linearToHex(c: [number, number, number]): string {
   const s = (v: number) => {
     const x = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
     return Math.round(Math.min(1, Math.max(0, x)) * 255)

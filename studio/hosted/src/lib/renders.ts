@@ -3,7 +3,7 @@ import "server-only";
 import * as modal from "./modal";
 import { LIBRARY, renderLook, type MaterialSpec } from "./scene";
 import * as store from "./store";
-import type { RenderJob } from "./store";
+import type { RenderJob, RenderSource } from "./store";
 
 export type RenderInput = { part: string } | { upload: string };
 
@@ -22,6 +22,7 @@ export type RenderOptions = {
   label_from?: "name" | "id";
   width?: number;
   aspect?: number;
+  source?: RenderSource;
 };
 
 /** At most this many tiles (inputs × views × materials) per sheet. */
@@ -54,19 +55,22 @@ export async function startRender(o: RenderOptions): Promise<RenderJob> {
     inputs.push({ name: unique, stl_b64: stl.toString("base64") });
     meta.push({ name: unique, ...inp });
   }
-  const { inputs: _, ...rest } = o;
+  const { inputs: _, source, ...rest } = o;
   const request = { ...rest, library: LIBRARY };
   const { call_id } = await modal.submitRender({ ...request, inputs });
-  const job: RenderJob = { id: `r${Date.now()}`, kind: o.kind, status: "pending", call_id, created_ms: Date.now(), request: rest, inputs: meta };
+  const job: RenderJob = { id: `r${Date.now()}`, kind: o.kind, status: "pending", call_id, created_ms: Date.now(), request: rest, inputs: meta, source: source ?? "studio" };
   await store.writeJob(job);
   return job;
 }
 
 /** A sheet of a part in its scene's look (the editor's "Render" button and the agent's tool). */
-export async function startPartSheet(part: string, o: { views?: RenderOptions["views"]; orbit?: string | null; spp?: number } = {}) {
+export async function startPartSheet(
+  part: string,
+  o: { views?: RenderOptions["views"]; orbit?: string | null; spp?: number; source?: RenderSource } = {},
+) {
   const scene = await store.readScene(part);
   const views = o.views?.length || o.orbit ? o.views ?? [] : ["iso", "front", "side", "top"];
-  return startRender({ kind: "sheet", inputs: [{ part }], views, orbit: o.orbit ?? null, tile: 480, spp: o.spp ?? 256, ...renderLook(scene) });
+  return startRender({ kind: "sheet", inputs: [{ part }], views, orbit: o.orbit ?? null, tile: 480, spp: o.spp ?? 256, source: o.source, ...renderLook(scene) });
 }
 
 /** Polls Modal for a pending job and stores its result. Returns the (possibly updated) job. */
