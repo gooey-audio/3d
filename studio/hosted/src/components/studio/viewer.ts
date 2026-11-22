@@ -371,7 +371,7 @@ export class Viewer {
     this.updateBounds();
   }
 
-  /** Lays the banana beside the part (to its right, along the depth) and sizes the framing
+  /** Lays the banana beside the part (on its left, along the depth) and sizes the framing
    *  sphere, ground, clipping planes and shadow camera to what is shown. */
   private updateBounds() {
     const b = this.bounds.set(this.center, this.radius);

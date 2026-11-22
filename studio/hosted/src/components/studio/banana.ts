@@ -44,7 +44,6 @@ export function makeBanana(): THREE.Mesh {
   const col: number[] = [];
   const idx: number[] = [];
   const c = new THREE.Color();
-  const radii: number[] = [];
 
   const center = (t: number) => {
     const a = (t - 0.5) * BEND;
@@ -59,7 +58,6 @@ export function makeBanana(): THREE.Mesh {
   for (let i = 0; i <= SEGMENTS; i++) {
     const t = i / SEGMENTS;
     const r = profile(t, c);
-    radii.push(r);
     const p = center(t);
     const s = side(t);
     // Ridges fade in from the stem and soften toward the tip.
