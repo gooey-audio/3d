@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { StoredTurn } from "./api";
+import { fmtSize, type StoredTurn } from "./api";
 
 export type Item =
   | { kind: "text"; text: string }
@@ -79,8 +79,7 @@ function toolSummary(it: Extract<Item, { kind: "tool" }>): { text: string; state
     return { text: `${e.kind}${e.line ? ` at line ${e.line}` : ""}: ${e.message}`, state: "err" };
   }
   if (build?.report) {
-    const s = build.report.size_mm.map((x: number) => x.toFixed(1)).join(" × ");
-    return { text: `built ${s} mm in ${build.seconds}s${build.note ? " (unchanged)" : ""}`, state: "ok" };
+    return { text: `built ${fmtSize(build.report)} in ${build.seconds}s${build.note ? " (unchanged)" : ""}`, state: "ok" };
   }
   if (it.name === "update_scene") return { text: Object.keys(it.args?.patch ?? {}).join(", ") || "ok", state: "ok" };
   return { text: "ok", state: "ok" };
@@ -149,7 +148,7 @@ export function Chat({ turns, running, enabled, model, onSend, onStop, onRevert,
         )}
         {enabled && turns.length === 0 && (
           <p className="muted pad">
-            Ask for a change: "add four M3 holes 6 mm from the corners", "fillet the top edges 2 mm", "make it brushed
+            Ask for a change: "add four 1/8 in holes 1/4 in from the corners", "fillet the top edges 1/16 in", "make it brushed
             aluminium on a dark background".
           </p>
         )}

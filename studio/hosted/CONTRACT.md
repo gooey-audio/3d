@@ -20,14 +20,16 @@ Binary payloads are base64 strings (`*_b64`).
 The endpoint writes the script to a temp dir and sends a `build` and a `params` request to one
 of the container's warm `gooey-3d cad serve` processes (the same results as
 `gooey-3d cad build --json` and `cad params --json`; `info` is null only if the script does
-not load). `report.faces[]` carries unit normals and lowercase surface types (`plane`,
+not load). Lengths: the mesh, STEP, `report.bounds`, `size_mm`, `volume_mm3` and `faces` are mm;
+`report.units` / `info.units` is the script's unit (`export const units`, else the engine's
+`GOOEY_UNITS`, else `in`) and `report.size` / `report.volume` are in it. `report.faces[]` carries unit normals and lowercase surface types (`plane`,
 `cylinder`, `cone`, `sphere`, `torus`, `bezier`, `bspline`, `revolution`, `extrusion`,
 `offset`, `other`).
 Response, always HTTP 200 unless auth or the request is malformed:
 
 ```json
 { "ok": true,  "report": { ...report.json (gooey-cad/report-v1)... }, "stl_b64": "...",
-  "step_b64": "..." | null, "info": {"defaultParams": {}, "paramRanges": {}} | null, "seconds": 1.2 }
+  "step_b64": "..." | null, "info": {"defaultParams": {}, "paramRanges": {}, "units": "in"} | null, "seconds": 1.2 }
 { "ok": false, "error": {"kind": "kernel", "message": "...", "line": 64, "column": 36},
   "info": {...} | null, "seconds": 0.8 }
 ```

@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::flags::{Flags, parse};
-use gooey_cad::{CadError, ErrorKind, Material, Options, Report, Worker, WorkerCommand, Written};
+use gooey_cad::{CadError, ErrorKind, Material, Options, Report, Units, Worker, WorkerCommand, Written};
 use serde_json::{Map, Value, json};
 
 pub use gooey_cad::{PROTOCOL, VERSION};
@@ -24,14 +24,21 @@ usage:
       only when everything passes.
   gooey-3d cad check PART.js [--set NAME=VALUE ...] [options]
       Build and validate; keep no files.
-  gooey-3d cad params PART.js
-      The script's defaultParams and paramRanges as JSON.
-  gooey-3d cad serve [--timeout S] [--max-jobs N] [--max-heap-mb MB]
+  gooey-3d cad params PART.js [--units in|cm|mm]
+      The script's defaultParams, paramRanges and units as JSON.
+  gooey-3d cad serve [--units U] [--timeout S] [--max-jobs N] [--max-heap-mb MB]
       Keep one warm worker and answer JSON-lines requests on stdin, one response
       line per request on stdout, in order (see \"serve protocol\" below).
 
+units: a script declares the unit its numbers are in with
+  export const units = \"in\";   // or \"cm\" or \"mm\"
+Scripts without one use --units, else $GOOEY_UNITS, else inches. Outputs are always
+millimetres (STL, STEP, report bounds, size_mm, volume_mm3, faces); the report's
+\"size\" and \"volume\" and the printed summary are in the script's units.
+
 options:
   --set NAME=VALUE        override a defaultParams entry (repeatable)
+  --units in|cm|mm        units of a script without `export const units` (default $GOOEY_UNITS, else in)
   --allow-out-of-range    accept values outside the script's paramRanges
   --timeout S             wall-clock limit for the build (default 30); the worker is killed
   --tolerance MM          mesh tolerance (default max(0.01, 2e-5 x bounding-box diagonal))
@@ -45,12 +52,12 @@ else gooey-cad-worker next to gooey-3d. Build it with cad-worker/build.sh (needs
 serve protocol (one JSON object per line):
   first line out: {\"ready\":true, \"protocol\", \"versions\", \"startup_seconds\"} (or \"error\"
       when the worker could not start; it is retried on the next request)
-  {\"id\", \"op\":\"build\", \"script\":PATH, \"params\":{...}, \"out\":DIR|null, \"step\":true,
+  {\"id\", \"op\":\"build\", \"script\":PATH, \"params\":{...}, \"units\", \"out\":DIR|null, \"step\":true,
    \"allow_out_of_range\":false, \"timeout\":S, \"tolerance\":MM, \"material\", \"bed\"}
       -> {\"id\", \"ok\":true, \"outputs\":{\"stl\",\"step\",\"report\"}|null, \"report\":{...}}
          as `cad build --json` (no \"out\": validate only, like `cad check`)
-  {\"id\", \"op\":\"params\", \"script\":PATH, \"timeout\":S}
-      -> {\"id\", \"ok\":true, \"defaultParams\":{...}, \"paramRanges\":{...}}
+  {\"id\", \"op\":\"params\", \"script\":PATH, \"units\", \"timeout\":S}
+      -> {\"id\", \"ok\":true, \"defaultParams\":{...}, \"paramRanges\":{...}, \"units\"}
   errors: {\"id\", \"ok\":false, \"error\":{kind, message, line, column}}
   Only op and script are required. The worker is replaced after a timeout, trap or
   crash, and after --max-jobs jobs (default 300) or --max-heap-mb of OpenCascade heap
@@ -59,7 +66,15 @@ serve protocol (one JSON object per line):
 Exit status: 0 ok; 2 script, syntax, params, kernel, limits, invalid or expect error
 (or bad usage); 3 timeout; 4 worker missing, crashed or trapped.";
 
-const BUILD_VALUES: &[&str] = &["--out", "--set", "--timeout", "--tolerance", "--material", "--bed"];
+const BUILD_VALUES: &[&str] = &[
+    "--out",
+    "--set",
+    "--units",
+    "--timeout",
+    "--tolerance",
+    "--material",
+    "--bed",
+];
 const BUILD_SWITCHES: &[&str] = &["--json", "--allow-out-of-range"];
 
 pub fn run(args: &[String]) -> Result<ExitCode, String> {
@@ -93,8 +108,19 @@ fn number(f: &Flags, k: &str) -> Result<Option<f64>, String> {
         .transpose()
 }
 
+/// `--units`, else `$GOOEY_UNITS`, else inches.
+fn units(f: &Flags) -> Result<Units, String> {
+    match f.value("--units") {
+        Some(u) => u.parse().map_err(|e| format!("--units: {e}")),
+        None => Units::from_env(),
+    }
+}
+
 fn options(f: &Flags) -> Result<Options, String> {
-    let mut o = Options::default();
+    let mut o = Options {
+        units: units(f)?,
+        ..Options::default()
+    };
     for set in f.all("--set") {
         let (k, v) = set.split_once('=').ok_or("--set wants NAME=VALUE")?;
         if k.is_empty() {
@@ -172,15 +198,17 @@ fn build_cmd(args: &[String], write: bool) -> Result<ExitCode, String> {
 }
 
 fn summary(r: &Report) {
-    let s = r.size_mm;
+    let s = r.size;
+    let d = if r.units == Units::Mm { 1 } else { 3 };
     let total = r.seconds.get("total").and_then(Value::as_f64).unwrap_or(0.0);
     println!(
-        "{}  {:.1} x {:.1} x {:.1} mm  {:.1} mm³  {}, {} piece{}, genus {}  {} triangles, {} faces  {total:.2} s",
+        "{}  {:.d$} x {:.d$} x {:.d$} {}  {}  {}, {} piece{}, genus {}  {} triangles, {} faces  {total:.2} s",
         r.script,
         s[0],
         s[1],
         s[2],
-        r.volume_mm3,
+        r.units,
+        gooey_cad::fmt_volume(r.volume_mm3, r.units),
         if r.closed { "watertight" } else { "OPEN" },
         r.pieces,
         if r.pieces == 1 { "" } else { "s" },
@@ -197,10 +225,13 @@ fn summary(r: &Report) {
 }
 
 fn params_cmd(args: &[String]) -> Result<ExitCode, String> {
-    let f = parse(args, &["--timeout"])?;
-    f.reject_unknown(&["--json"], &["--timeout"])?;
+    let f = parse(args, &["--timeout", "--units"])?;
+    f.reject_unknown(&["--json"], &["--timeout", "--units"])?;
     let script = one_script(&f, "params")?;
-    let mut opts = Options::default();
+    let mut opts = Options {
+        units: units(&f)?,
+        ..Options::default()
+    };
     if let Some(t) = number(&f, "--timeout")? {
         opts.timeout = Duration::from_secs_f64(t);
     }
@@ -223,6 +254,8 @@ struct Serve {
     cmd: Option<WorkerCommand>,
     worker: Option<Worker>,
     timeout: Duration,
+    /// Default units for requests without `units`.
+    units: Units,
     max_jobs: u64,
     max_heap_mb: f64,
 }
@@ -295,6 +328,7 @@ impl Serve {
     fn options(&self, req: &Map<String, Value>) -> Result<Options, CadError> {
         let mut o = Options {
             timeout: self.timeout,
+            units: request_units(req, self.units)?,
             ..Options::default()
         };
         match req.get("params") {
@@ -334,7 +368,8 @@ impl Serve {
     fn params(&mut self, req: &Map<String, Value>) -> Result<Value, CadError> {
         let script = script_of(req)?;
         let timeout = positive(req, "timeout")?.map_or(self.timeout, Duration::from_secs_f64);
-        gooey_cad::params_with(self.worker()?, script, timeout)
+        let units = request_units(req, self.units)?;
+        gooey_cad::params_with(self.worker()?, script, units, timeout)
     }
 }
 
@@ -346,6 +381,14 @@ fn script_of(req: &Map<String, Value>) -> Result<&Path, CadError> {
     match req.get("script") {
         Some(Value::String(s)) if !s.is_empty() => Ok(Path::new(s)),
         _ => Err(bad_request("request needs a `script` path")),
+    }
+}
+
+fn request_units(req: &Map<String, Value>, default: Units) -> Result<Units, CadError> {
+    match req.get("units") {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::String(u)) => u.parse().map_err(|e: String| bad_request(&format!("`units`: {e}"))),
+        Some(_) => Err(bad_request("`units` must be \"in\", \"cm\" or \"mm\"")),
     }
 }
 
@@ -376,7 +419,7 @@ fn serve_error(id: Value, e: &CadError) -> Value {
 }
 
 fn serve_cmd(args: &[String]) -> Result<ExitCode, String> {
-    const VALUES: &[&str] = &["--timeout", "--max-jobs", "--max-heap-mb"];
+    const VALUES: &[&str] = &["--timeout", "--units", "--max-jobs", "--max-heap-mb"];
     let f = parse(args, VALUES)?;
     f.reject_unknown(&[], VALUES)?;
     if !f.positional.is_empty() {
@@ -386,6 +429,7 @@ fn serve_cmd(args: &[String]) -> Result<ExitCode, String> {
         cmd: None,
         worker: None,
         timeout: number(&f, "--timeout")?.map_or(gooey_cad::DEFAULT_TIMEOUT, Duration::from_secs_f64),
+        units: units(&f)?,
         max_jobs: number(&f, "--max-jobs")?.map_or(SERVE_MAX_JOBS, |n| n.ceil() as u64),
         max_heap_mb: number(&f, "--max-heap-mb")?.unwrap_or(SERVE_MAX_HEAP_MB),
     };
@@ -454,8 +498,12 @@ mod tests {
             "--allow-out-of-range",
             "--material",
             "tpu",
+            "--units",
+            "cm",
         ]))
         .unwrap();
+        assert_eq!(o.units, Units::Cm);
+        assert!(options(&flags(&["--units", "furlongs"])).is_err());
         assert_eq!(o.params["length"], "140");
         assert_eq!(o.params["width"], "30");
         assert_eq!(o.timeout, Duration::from_millis(2500));

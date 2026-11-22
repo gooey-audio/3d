@@ -16,6 +16,7 @@ import {
   type ScriptDiff,
 } from "@/lib/agent-shared";
 import type { FaceSelection } from "@/lib/selection";
+import { DEFAULT_UNITS, fmtLength, parseUnits, type Units } from "@/lib/units";
 import styles from "./ChatPanel.module.css";
 
 export type ChatPanelProps = {
@@ -28,6 +29,8 @@ export type ChatPanelProps = {
   selection?: FaceSelection[];
   /** Called to change the selection: a chip was removed, or the message was sent ([]). */
   onSelectionChange?: (s: FaceSelection[]) => void;
+  /** The units dimensions are shown in (the studio setting); the agent answers in them too. */
+  units?: Units;
 };
 
 type ModelInfo = { id: string; label: string; vendor: string; via: string; vision?: boolean; available: boolean };
@@ -76,7 +79,7 @@ export function ChatPanel(props: ChatPanelProps) {
   return <PartChat key={props.part} {...props} />;
 }
 
-function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelectionChange }: ChatPanelProps) {
+function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelectionChange, units = DEFAULT_UNITS }: ChatPanelProps) {
   const [models, setModels] = useState<ModelList | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [text, setText] = useState("");
@@ -117,6 +120,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
           body: {
             part,
             model: String(body?.model ?? ""),
+            units: parseUnits(body?.units) ?? undefined,
             message: messages[messages.length - 1],
             trigger: trigger === "regenerate-message" ? "regenerate-message" : "submit-message",
           } satisfies ChatRequest,
@@ -212,7 +216,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
     pending.current = { text: t, selection: sel };
     // The picked faces are stored on the user message (history shows what was pointed at) and
     // cleared once sent.
-    void sendMessage({ text: t, ...(sel.length ? { metadata: { selection: sel } } : {}) }, { body: { model } });
+    void sendMessage({ text: t, ...(sel.length ? { metadata: { selection: sel } } : {}) }, { body: { model, units } });
     if (sel.length) onSelectionChange?.([]);
   };
 
@@ -222,7 +226,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
     clearError();
     setNote(null);
     pending.current = null;
-    void regenerate({ body: { model } });
+    void regenerate({ body: { model, units } });
   };
 
   const reload = () => {
@@ -296,7 +300,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
       <div className={styles.log}>
         {loaded && messages.length === 0 && (
           <p className={styles.muted}>
-            Ask for a change: &ldquo;add four M3 holes 6 mm from the corners&rdquo;, &ldquo;fillet the top edges 2 mm&rdquo;,
+            Ask for a change: {EXAMPLES[units]},
             &ldquo;make it brushed aluminium on a dark background&rdquo;.
           </p>
         )}
@@ -307,7 +311,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
               {!!m.metadata?.selection?.length && (
                 <div className={styles.sentChips}>
                   {m.metadata.selection.map((s, i) => (
-                    <span key={i} className={styles.chip} title={chipTitle(s)}>
+                    <span key={i} className={styles.chip} title={chipTitle(s, units)}>
                       {selectionLabel(s)}
                     </span>
                   ))}
@@ -325,7 +329,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
                       {p.text}
                     </details>
                   ) : null;
-                if (isToolUIPart(p)) return <ToolChip key={p.toolCallId} p={p} />;
+                if (isToolUIPart(p)) return <ToolChip key={p.toolCallId} p={p} units={units} />;
                 return null;
               })}
               {m.metadata?.error && <div className={styles.error}>{m.metadata.error}</div>}
@@ -389,7 +393,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
         <div className={styles.chips}>
           <span className={styles.muted}>with</span>
           {selection.map((s, i) => (
-            <span key={`${s.face}-${i}`} className={styles.chip} title={chipTitle(s)}>
+            <span key={`${s.face}-${i}`} className={styles.chip} title={chipTitle(s, units)}>
               {selectionLabel(s)}
               {onSelectionChange && (
                 <button className={styles.chipX} onClick={() => unselect(i)} aria-label={`remove ${selectionLabel(s)}`}>
@@ -427,14 +431,21 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
   );
 }
 
-const fmtV = (v: number[]) => `[${v.map((x) => +x.toFixed(2)).join(", ")}]`;
-const chipTitle = (s: FaceSelection) => `centre ${fmtV(s.center)}, normal ${fmtV(s.normal)}, build rev ${s.rev}`;
+const EXAMPLES: Record<Units, string> = {
+  in: "\u201cadd four 1/8 in holes 1/4 in from the corners\u201d, \u201cfillet the top edges 1/16 in\u201d",
+  cm: "\u201cadd four 3 mm holes 0.6 cm from the corners\u201d, \u201cfillet the top edges 0.2 cm\u201d",
+  mm: "\u201cadd four M3 holes 6 mm from the corners\u201d, \u201cfillet the top edges 2 mm\u201d",
+};
 
-function ToolChip({ p }: { p: ToolUIPart | DynamicToolUIPart }) {
+const fmtV = (v: number[]) => `[${v.map((x) => +x.toFixed(2)).join(", ")}]`;
+const fmtP = (v: number[], u: Units) => `[${v.map((x) => fmtLength(x, u)).join(", ")}] ${u}`;
+const chipTitle = (s: FaceSelection, u: Units) => `centre ${fmtP(s.center, u)}, normal ${fmtV(s.normal)}, build rev ${s.rev}`;
+
+function ToolChip({ p, units }: { p: ToolUIPart | DynamicToolUIPart; units: Units }) {
   const [open, setOpen] = useState(false);
   const name = getToolName(p);
   const output = p.state === "output-available" ? p.output : undefined;
-  const s = summarizeTool(name, p.input, output, p.state === "output-error" ? p.errorText : undefined);
+  const s = summarizeTool(name, p.input, output, p.state === "output-error" ? p.errorText : undefined, units);
   const o = (output ?? {}) as { script_diff?: ScriptDiff } & Partial<LookResult>;
   const diff = o.script_diff;
   const look = name === "look_at_part" && o.ok === true && typeof o.image === "string" ? (o as LookResult) : null;

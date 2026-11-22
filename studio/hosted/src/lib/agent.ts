@@ -12,6 +12,7 @@ import { REPLICAD_IDIOMS } from "./prompts/replicad-idioms";
 import { FINISHES, renderLook, resolve, SceneError } from "./scene";
 import { describeSelection, type Face, type FaceSelection } from "./selection";
 import * as store from "./store";
+import { fromMm, partUnits, toMm, UNIT_LABELS, type Units } from "./units";
 
 type ToolResultOutput = ToolResultPart["output"];
 
@@ -46,8 +47,14 @@ build fails, read the error kind, message and line, fix the cause, and try again
 failed build unless you explain why you cannot fix it.
 - edit_script edits are exact text replacements: each old_text must occur exactly once in the \
 current script. If an edit fails, nothing was changed; read the script and retry.
-- Units are millimetres. The part frame is Z up (CAD convention); it is shown resting on a ground \
-plane.
+- Units: the script declares its length unit, \`export const units = "in"\` (or "cm" or "mm"), \
+and every length in it is in that unit. The studio default is inches. Keep the declaration; never \
+change it to rescale a part (that changes every number's meaning). Build results (\`size\`, \
+\`volume\`), face centres, points and get_faces are all in the script's units. The turn's \
+<studio-context> names the part's units and the units the user reads; give dimensions to the user \
+in theirs (convert when they differ). Metric hardware stays metric: an M5 clearance hole in an \
+inch part is \`5.5 / 25.4\`.
+- The part frame is Z up (CAD convention); it is shown resting on a ground plane.
 - Use set_params to change parameter values; use edit_script to change defaults, ranges or the \
 geometry itself. Do not change the same value both ways in one step.
 - Change the look with update_scene (a JSON merge patch over the scene document). The scene's \
@@ -68,13 +75,13 @@ Selected faces:
 faces" list, and words like "this face", "these", "here" or "the edges of this" refer to it. Each \
 entry has the B-rep face number, its surface type (plane, cylinder, cone, sphere, torus, bspline, \
 revolution, extrusion, ...), its centre and unit normal, and the clicked point. All are in part coordinates, the frame of the \
-script (mm, Z up).
+script (its units, Z up).
 - Face numbers belong to one build and change when the topology changes. Never write them into \
 the script. Target the geometry with finders built from the centre, normal and point:
   - planar face with normal ±Z at z = h: faces \`f.inPlane("XY", h)\`, its edges \`e.inPlane("XY", h)\`;
   - normal ±X at x = a: \`inPlane("YZ", a)\`; normal ±Y at y = b: \`inPlane("XZ", [0, b, 0])\` \
 (see the "XZ" sign note below);
-  - any face: \`f.near(centre, 0.3)\` or \`f.containsPoint(point)\` (planar faces), \
+  - any face: \`f.near(centre, tol)\` (tol about 0.01 in, 0.03 cm, 0.3 mm) or \`f.containsPoint(point)\` (planar faces), \
 \`f.ofSurfaceType("CYLINDRE")\` (scripts use Replicad's names: PLANE, CYLINDRE, CONE, SPHERE, \
 TORUS, BSPLINE_SURFACE, ...), \`f.atAngleWith("Z", 0)\`; edges of a face: \`inList(face.edges)\` \
 (below); edges near a point: \`e.near(point, tol)\`, \`e.atDistance(d, point)\`, \
@@ -100,15 +107,24 @@ Reference: the gooey-3d cad skill. Its CLI sections do not apply here; the tools
 ${CAD_SKILL}`;
 }
 
-/** The fresh state of the part, prepended to the user's message for this turn. */
-export async function context(part: string, selection?: FaceSelection[]): Promise<string> {
+/** The units of a part's script: its declaration, else what the last good build used. */
+function unitsOf(build: store.BuildSummary | null, script: string | null): Units {
+  const report = build?.ok ? build.report : build?.lastGood?.report;
+  return partUnits(report as { units?: unknown } | undefined, script);
+}
+
+/** The fresh state of the part, prepended to the user's message for this turn. `display` is
+ *  the units the user reads dimensions in (the studio setting). */
+export async function context(part: string, selection?: FaceSelection[], display?: Units): Promise<string> {
   const [script, scene, build] = await Promise.all([store.readScript(part), store.readScene(part), store.readBuild(part)]);
   const b = build ? describeBuild(build, script ?? undefined) : null;
+  const units = unitsOf(build, script);
+  const reads = display ?? units;
   let sel = "";
   if (selection?.length) {
     const stale = build && selection.some((s) => s.rev !== build.rev);
-    sel = `\nSelected faces (picked in the viewer for this message; part coordinates, mm, Z up):
-${describeSelection(selection)}${
+    sel = `\nSelected faces (picked in the viewer for this message; part coordinates, ${units}, Z up):
+${describeSelection(selection, units)}${
       stale
         ? `\n(Some were picked on another build than the current rev ${build.rev}; their face numbers may have changed. Rely on the centre, normal and point.)`
         : ""
@@ -116,6 +132,7 @@ ${describeSelection(selection)}${
   }
   return `<studio-context>
 Part: ${part}.js
+Units: the script is in ${UNIT_LABELS[units]} (${units}); the user reads ${UNIT_LABELS[reads]} (${reads}).
 Current script:
 ${numbered(script ?? "")}
 Scene: ${JSON.stringify(scene)}
@@ -255,7 +272,7 @@ export function agentTools(part: string, opts: { vision?: boolean } = {}) {
     }),
     get_faces: tool({
       description:
-        "The B-rep face table of the last good build: face number, surface type, centre and unit normal (part coordinates, mm). Filter by `type` (plane, cylinder, cone, sphere, torus, bspline, revolution, extrusion, offset; Replicad's names such as CYLINDRE also work), by `near` a point (sorted by centre distance, optionally `within` mm) and by `facing` a direction (normal within 10°). Face numbers change with the topology: use them to understand the part, not in the script.",
+        "The B-rep face table of the last good build: face number, surface type, centre and unit normal (part coordinates, in the script's units). Filter by `type` (plane, cylinder, cone, sphere, torus, bspline, revolution, extrusion, offset; Replicad's names such as CYLINDRE also work), by `near` a point (sorted by centre distance, optionally `within` a distance; both in the script's units) and by `facing` a direction (normal within 10°). Face numbers change with the topology: use them to understand the part, not in the script.",
       inputSchema: z.object({
         type: z.string().optional(),
         near: point.optional(),
@@ -265,8 +282,12 @@ export function agentTools(part: string, opts: { vision?: boolean } = {}) {
       }),
       execute: guard(
         async ({ type, near, within, facing, limit }: { type?: string; near?: number[]; within?: number; facing?: number[]; limit?: number }) => {
-          const [faces, build] = await Promise.all([store.readFaces(part), store.readBuild(part)]);
+          const [faces, build, script] = await Promise.all([store.readFaces(part), store.readBuild(part), store.readScript(part)]);
           if (!faces.length) return fail("no face table yet: the part has no good build");
+          // The face table is mm; the model works in the script's units.
+          const u = unitsOf(build, script);
+          near = near?.map((x) => toMm(x, u));
+          within = within === undefined ? undefined : toMm(within, u);
           let rows: (Face & { distance?: number })[] = faces;
           if (type) rows = rows.filter((f) => surfaceLabel(f.type) === surfaceLabel(type));
           if (facing) {
@@ -288,12 +309,13 @@ export function agentTools(part: string, opts: { vision?: boolean } = {}) {
             ...(build && !build.ok ? { note: `the last build (rev ${build.rev}) failed; these faces are from the last good build` } : { rev: build?.rev }),
             total: faces.length,
             matched: rows.length,
+            units: u,
             faces: rows.slice(0, n).map((f) => ({
               face: f.face,
               type: f.type,
-              center: round(f.center),
+              center: round(f.center.map((x) => fromMm(x, u)), u === "mm" ? 2 : 4),
               normal: round(unit(f.normal), 3),
-              ...(f.distance !== undefined ? { distance: +f.distance.toFixed(2) } : {}),
+              ...(f.distance !== undefined ? { distance: +fromMm(f.distance, u).toFixed(u === "mm" ? 2 : 4) } : {}),
             })),
           };
         },
