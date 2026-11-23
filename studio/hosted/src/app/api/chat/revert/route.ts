@@ -1,6 +1,7 @@
 // POST /api/chat/revert { part, checkpoint }: restores the script and scene from before a turn
 // (store.restore) and rebuilds. Returns `{ ok: true, build }` (the new BuildSummary); 409 while
 // an agent turn runs on the part.
+import { route } from "@/lib/http";
 import * as lock from "@/lib/agent-lock";
 import { modelLabel } from "@/lib/models";
 import { buildPart } from "@/lib/parts";
@@ -8,7 +9,7 @@ import * as store from "@/lib/store";
 
 export const maxDuration = 120;
 
-export async function POST(req: Request) {
+export const POST = route(async (req) => {
   const body = (await req.json().catch(() => null)) as { part?: unknown; checkpoint?: unknown } | null;
   const part = body?.part;
   const checkpoint = body?.checkpoint;
@@ -24,4 +25,4 @@ export async function POST(req: Request) {
   }
   const build = await buildPart(part);
   return Response.json({ ok: true, build });
-}
+});

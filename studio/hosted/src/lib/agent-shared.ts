@@ -42,7 +42,7 @@ export const TURN_LOCKED = "turn-locked";
 /** Tools whose results change the part (script, scene or build): the UI reloads it. */
 export const MUTATING_TOOLS = new Set(["edit_script", "write_script", "set_params", "update_scene"]);
 
-export const MAX_STEPS = 24;
+export const MAX_STEPS = 8;
 
 /** At most this many faces ride along with one message. */
 export const MAX_SELECTION = 24;

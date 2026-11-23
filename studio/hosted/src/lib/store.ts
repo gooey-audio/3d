@@ -6,7 +6,7 @@ import { del, get, list, put } from "@vercel/blob";
 import { createHash } from "node:crypto";
 import { defaultScene, normalize, type Scene } from "./scene";
 
-const ROOT = "3d-studio/";
+import { currentWorkspace } from "./workspace";
 
 export type CadError = { kind: string; message: string; line?: number | null; column?: number | null };
 
@@ -57,7 +57,7 @@ export function validPart(name: string): boolean {
 
 function key(path: string): string {
   if (path.includes("..") || path.startsWith("/")) throw new StoreError(`bad path ${path}`);
-  return ROOT + path;
+  return currentWorkspace() + path;
 }
 
 function partKey(part: string, file: string): string {
@@ -111,10 +111,11 @@ export const sha256 = (b: string | Uint8Array) => createHash("sha256").update(b)
 // --- parts ---------------------------------------------------------------------
 
 export async function listParts(): Promise<string[]> {
-  const blobs = await listAll(key("parts/"));
+  const prefix = key("parts/");
+  const blobs = await listAll(prefix);
   const names = new Set<string>();
   for (const b of blobs) {
-    const m = /^3d-studio\/parts\/([^/]+)\/script\.js$/.exec(b.pathname);
+    const m = /^([^/]+)\/script\.js$/.exec(b.pathname.slice(prefix.length));
     if (m) names.add(m[1]);
   }
   return [...names].sort();
@@ -316,11 +317,12 @@ export type PartInfo = { name: string; mesh: boolean; updated_ms: number };
 
 /** Parts with whether they have a mesh, from one listing. */
 export async function listPartsInfo(): Promise<PartInfo[]> {
-  const blobs = await listAll(key("parts/"));
+  const prefix = key("parts/");
+  const blobs = await listAll(prefix);
   const parts = new Map<string, PartInfo>();
   const files = new Map<string, Set<string>>();
   for (const b of blobs) {
-    const m = /^3d-studio\/parts\/([^/]+)\/([^/]+)$/.exec(b.pathname);
+    const m = /^([^/]+)\/([^/]+)$/.exec(b.pathname.slice(prefix.length));
     if (!m) continue;
     if (!files.has(m[1])) files.set(m[1], new Set());
     files.get(m[1])!.add(m[2]);
@@ -335,10 +337,9 @@ export async function listPartsInfo(): Promise<PartInfo[]> {
 }
 
 /** Where browsers upload large STLs directly (presigned); `adoptIncoming` then files them. */
-export const INCOMING = "3d-studio/uploads/incoming/";
-
 export function validIncoming(pathname: string): boolean {
-  return /^3d-studio\/uploads\/incoming\/[A-Za-z0-9_-]{8,64}\.stl$/.test(pathname);
+  const prefix = key("uploads/incoming/");
+  return pathname.startsWith(prefix) && /^[A-Za-z0-9_-]{8,64}\.stl$/.test(pathname.slice(prefix.length));
 }
 
 /** Moves a directly uploaded STL to `uploads/<sha256>.stl` with its metadata. */

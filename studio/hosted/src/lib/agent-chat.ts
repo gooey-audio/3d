@@ -5,8 +5,7 @@ import { APICallError } from "ai";
 import { MAX_SELECTION, type ChatMessage } from "./agent-shared";
 import type { FaceSelection } from "./selection";
 
-/** A user message's text may be this long (the request is a single message). */
-const MAX_TEXT = 100_000;
+import { MAX_CHAT_TEXT } from "./chat-quota-shared";
 
 const vec3 = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === "number" && Number.isFinite(x));
 
@@ -39,7 +38,7 @@ export function parseUserMessage(v: unknown): ChatMessage | string {
   const parts = m.parts.filter((p): p is { type: "text"; text: string } => !!p && p.type === "text" && typeof (p as { text?: unknown }).text === "string");
   const text = parts.map((p) => p.text).join("");
   if (!text.trim()) return "the message is empty";
-  if (text.length > MAX_TEXT) return `the message is too long (${text.length} characters; at most ${MAX_TEXT})`;
+  if (text.length > MAX_CHAT_TEXT) return `the message is too long (${text.length} characters; at most ${MAX_CHAT_TEXT})`;
   const selection = parseSelection(m.metadata?.selection);
   return { id: m.id, role: "user", parts: parts.map((p) => ({ type: "text", text: p.text })), ...(selection.length ? { metadata: { selection } } : {}) };
 }

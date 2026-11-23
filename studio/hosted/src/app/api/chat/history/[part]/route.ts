@@ -1,6 +1,7 @@
 // GET /api/chat/history/<part>: the stored conversation, `{ messages: UIMessage[] }`, streamed
 // from Blob (a long chat may exceed the 4.5 MB cap on buffered function responses).
 // DELETE /api/chat/history/<part>: clears it (checkpoints stay); 409 while a turn runs.
+import { route } from "@/lib/http";
 import * as lock from "@/lib/agent-lock";
 import { modelLabel } from "@/lib/models";
 import * as store from "@/lib/store";
@@ -12,7 +13,7 @@ async function partOf(ctx: Ctx): Promise<string | Response> {
   return store.validPart(part) ? part : Response.json({ error: "bad part name" }, { status: 400 });
 }
 
-export async function GET(_req: Request, ctx: Ctx) {
+export const GET = route(async (_req, ctx: Ctx) => {
   const part = await partOf(ctx);
   if (part instanceof Response) return part;
   const headers = { "content-type": "application/json", "cache-control": "no-store" };
@@ -27,13 +28,13 @@ export async function GET(_req: Request, ctx: Ctx) {
     }),
   );
   return new Response(body, { headers });
-}
+});
 
-export async function DELETE(_req: Request, ctx: Ctx) {
+export const DELETE = route(async (_req, ctx: Ctx) => {
   const part = await partOf(ctx);
   if (part instanceof Response) return part;
   const t = await lock.holder(part);
   if (t) return Response.json(lock.lockedBody(t, modelLabel(t.model)), { status: 409 });
   await store.writeChat(part, []);
   return Response.json({ ok: true });
-}
+});

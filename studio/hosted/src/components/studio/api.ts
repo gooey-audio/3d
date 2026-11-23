@@ -52,7 +52,7 @@ export async function call<T>(method: string, url: string, body?: unknown): Prom
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && typeof window !== "undefined") {
-    window.location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+    window.location.replace("/login");
   }
   if (!res.ok) throw new ApiError(res.status, data.error ?? res.statusText, data);
   return data as T;
