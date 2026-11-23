@@ -76,6 +76,8 @@ as context, plus these tools:
 | `get_report` | Returns the last build's validation report. |
 | `get_scene` / `update_scene` | Reads the scene, or applies a JSON merge patch to it. |
 | `list_finishes` | Lists the finishes in the library. |
+| `load_texture_skill` | Returns the texture skill (`engine/skill/textures`): patterns, sizes and fixes for surface textures. |
+| `add_texture_kit` | Appends the texture kit `TEX` to the script, or updates an older copy, then a build. |
 | `render_sheet` | Queues a final render of the part (views, orbit, spp). |
 
 Script tools wait for their build and return the result: the size, genus and

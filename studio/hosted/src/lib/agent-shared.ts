@@ -119,6 +119,8 @@ export function summarizeTool(name: string, input: unknown, output: unknown, err
       return { text: Object.keys(args.patch ?? {}).join(", ") || "ok", state: "ok" };
     case "read_script":
       return { text: `${String(r.script ?? "").split("\n").length} lines`, state: "ok" };
+    case "load_texture_skill":
+      return { text: "texture skill loaded", state: "ok" };
     case "list_finishes":
       return { text: `${Array.isArray(output) ? output.length : 0} finishes`, state: "ok" };
     case "render_sheet":

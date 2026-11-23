@@ -29,6 +29,7 @@ fixtures/             synthetic parts and reports (castkit), fixtures/cad (part 
 skill/cast-moulds/    agent skill: choosing, building, checking and printing moulds
 skill/cad/            agent skill: part scripts, cad build/check/params
 skill/render/         agent skill: ad hoc renders, contact sheets, scenes
+skill/textures/       agent skill + texture kit: hammered, coral, organic and halftone surface textures
 ```
 
 ## Install
@@ -108,7 +109,9 @@ gooey-3d cad check part.js --units cm                                   # an und
 A script exports `main(replicad, params)` returning a solid, `defaultParams`, and
 optionally `paramRanges = {name: [min, max]}` and `expect = {pieces, genus}` (or a
 function of the params). See [`fixtures/cad/brace.js`](fixtures/cad/brace.js) and
-[`skill/cad/SKILL.md`](skill/cad/SKILL.md).
+[`skill/cad/SKILL.md`](skill/cad/SKILL.md). Organic surface textures (hammered, coral,
+contour ripples, halftone dots) come from the texture kit in
+[`skill/textures/`](skill/textures/SKILL.md).
 
 **Units.** A script's numbers are in the unit it declares with
 `export const units = "in"` (or `"cm"`, `"mm"`). Scripts without one use `--units`,
