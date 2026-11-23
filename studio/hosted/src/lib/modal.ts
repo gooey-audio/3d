@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { CadError } from "./store";
+import { declaredUnits } from "./units";
 
 const run = promisify(execFile);
 
@@ -64,7 +65,26 @@ async function call<T>(method: string, route: string, body?: unknown): Promise<T
 
 export async function build(script: string, params: Record<string, unknown>, opts: { filename?: string; step?: boolean } = {}): Promise<BuildResponse> {
   const req = { script, params, filename: opts.filename ?? "part.js", step: !!opts.step };
-  return remote() ? call<BuildResponse>("POST", "/build", req) : localBuild(req);
+  const res = await (remote() ? call<BuildResponse>("POST", "/build", req) : localBuild(req));
+  return staleEngine(script, res) ?? res;
+}
+
+/** A build engine from before script units ignores `export const units` and builds the numbers
+ *  as millimetres, so an inch part comes out 25.4 times too small; its reports have no `units`.
+ *  Such a build is refused rather than shown at the wrong size. */
+function staleEngine(script: string, res: BuildResponse): BuildResponse | null {
+  const declared = declaredUnits(script);
+  if (!res.ok || !res.report || "units" in res.report || !declared || declared === "mm") return null;
+  const where = remote() ? "Redeploy the Modal API: `modal deploy engine/modal/gooey_api.py`" : "Rebuild gooey-3d and the cad-worker";
+  return {
+    ok: false,
+    error: {
+      kind: "worker",
+      message: `the build engine predates script units: it built this ${declared} script as millimetres. ${where}.`,
+    },
+    info: res.info,
+    seconds: res.seconds,
+  };
 }
 
 export async function submitRender(req: RenderRequest): Promise<{ call_id: string }> {
