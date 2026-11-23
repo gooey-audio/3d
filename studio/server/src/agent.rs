@@ -19,6 +19,10 @@ use tokio_util::sync::CancellationToken;
 use crate::{App, AppError, sha256_hex};
 
 const CAD_SKILL: &str = include_str!("../../../engine/skill/cad/SKILL.md");
+const TEXTURE_SKILL: &str = include_str!("../../../engine/skill/textures/SKILL.md");
+const TEXTURE_KIT: &str = include_str!("../../../engine/skill/textures/kit.js");
+const KIT_START: &str = "// ---- gooey texture kit";
+const KIT_END: &str = "// ---- end gooey texture kit ----";
 const BUILD_WAIT: Duration = Duration::from_secs(90);
 /// Earlier turns sent with each request.
 const HISTORY_TURNS: usize = 12;
@@ -220,6 +224,10 @@ lights, turned about the vertical axis) or {{\"type\": \"hdri\", \"path\": \"fil
 \"intensity\": 1, \"rotation_deg\": 0}}. `background` is `#rrggbb` or `transparent`; `exposure` > \
 0; `camera` is {{\"view\": \"iso\"|\"front\"|\"side\"|\"top\"|\"rear\"|\"rear-iso\"|[x,y,z], \"fov\": \
 degrees}} (Y up in view space).
+- For any surface texture or decorative relief (hammered or beaten metal, tamped or repoussé, \
+coral, organic undulation, ripples or contour lines, halftone dots or blobs, a dotted grille), call \
+load_texture_skill first and follow it; add_texture_kit appends the texture kit `TEX` to the \
+script. Never improvise a texture from many small booleans: they time out or come back invalid.
 - Be brief. After changes, summarise what you did in one or two sentences with the key numbers \
 (size, holes/genus, printability issues).
 
@@ -288,6 +296,16 @@ fn tools() -> Value {
             "update_scene",
             "Apply a JSON merge patch to the scene document (null deletes a key). Returns the new scene or a validation error.",
             json!({"type": "object", "properties": {"patch": {"type": "object"}}, "required": ["patch"]})
+        ),
+        f(
+            "load_texture_skill",
+            "The texture skill: how to add organic surface textures (hammered, pillows, coral, undulation, contours, halftone metaballs; carved into a top face or a round wall, or as crisp embossed/debossed/pierced regions) with the texture kit TEX. Call it before adding or changing a texture.",
+            none.clone()
+        ),
+        f(
+            "add_texture_kit",
+            "Append the texture kit (const TEX, between `// ---- gooey texture kit` markers) to the end of the script, or replace an existing kit block with the current version, then rebuild. Returns the build result.",
+            none.clone()
         ),
         f("list_finishes", "The finish library: names and labels.", none),
         f(
@@ -377,6 +395,16 @@ async fn tool(app: &App, part: &str, name: &str, args: &Value) -> Result<Value, 
             }
             Ok(out)
         }
+        "load_texture_skill" => Ok(json!({"ok": true, "skill": skill_body(TEXTURE_SKILL)})),
+        "add_texture_kit" => {
+            let src = app.read_script(part)?;
+            let new = with_texture_kit(&src);
+            if new == src {
+                return Ok(json!({"ok": true, "note": "the script already has the current texture kit"}));
+            }
+            let rev = app.write_script(part, &new)?;
+            Ok(build_result(app, part, rev).await)
+        }
         "list_finishes" => Ok(json!(
             app.library
                 .entries
@@ -403,6 +431,37 @@ async fn tool(app: &App, part: &str, name: &str, args: &Value) -> Result<Value, 
             )
         }
         other => Err(AppError(format!("unknown tool `{other}`"))),
+    }
+}
+
+/// A skill's Markdown without its front matter.
+fn skill_body(md: &str) -> &str {
+    md.strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+        .map_or(md, |(_, body)| body.trim_start())
+}
+
+/// `src` with the texture kit appended, or with an existing kit block replaced by the
+/// current one.
+fn with_texture_kit(src: &str) -> String {
+    let kit = TEXTURE_KIT.trim_end_matches('\n');
+    let lines: Vec<&str> = src.split('\n').collect();
+    let start = lines.iter().position(|l| l.starts_with(KIT_START));
+    let end = start.and_then(|s| {
+        lines
+            .iter()
+            .skip(s + 1)
+            .position(|l| l.starts_with(KIT_END))
+            .map(|e| s + 1 + e)
+    });
+    match (start, end) {
+        (Some(s), Some(e)) => {
+            let mut out = lines[..s].to_vec();
+            out.push(kit);
+            out.extend_from_slice(&lines[e + 1..]);
+            out.join("\n")
+        }
+        _ => format!("{}\n\n{kit}\n", src.trim_end_matches('\n')),
     }
 }
 
@@ -632,4 +691,22 @@ async fn stream_step(
         );
     }
     Ok((Value::Object(msg), calls))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn texture_kit_is_appended_once_and_updated_in_place() {
+        let src = "export function main() {}\n";
+        let once = with_texture_kit(src);
+        assert!(once.starts_with("export function main() {}\n\n// ---- gooey texture kit"));
+        assert!(once.ends_with("// ---- end gooey texture kit ----\n"));
+        assert_eq!(with_texture_kit(&once), once);
+        let old = once.replace("const TEX = (() => {", "const TEX = (() => { // old");
+        assert_eq!(with_texture_kit(&old), once);
+        assert!(!skill_body(TEXTURE_SKILL).starts_with("---"));
+        assert!(skill_body(TEXTURE_SKILL).starts_with("# Surface textures"));
+    }
 }

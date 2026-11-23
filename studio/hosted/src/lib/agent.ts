@@ -9,19 +9,14 @@ import { buildPart, describeBuild, saveAndBuild, updateScene } from "./parts";
 import { refresh, startPartSheet, startRender } from "./renders";
 import { CAD_SKILL } from "./prompts/cad-skill";
 import { REPLICAD_IDIOMS } from "./prompts/replicad-idioms";
+import { TEXTURE_KIT, TEXTURE_SKILL } from "./prompts/texture-skill";
 import { FINISHES, renderLook, resolve, SceneError } from "./scene";
 import { describeSelection, type Face, type FaceSelection } from "./selection";
 import * as store from "./store";
+import { kitLines, numberedFolding, withTextureKit } from "./texture-kit";
 import { fromMm, partUnits, toMm, UNIT_LABELS, type Units } from "./units";
 
 type ToolResultOutput = ToolResultPart["output"];
-
-export function numbered(src: string): string {
-  return src
-    .split("\n")
-    .map((l, i) => `${String(i + 1).padStart(4)}| ${l}`)
-    .join("\n");
-}
 
 export function systemPrompt(part: string, opts: { vision?: boolean } = {}): string {
   const finishes = FINISHES.length ? FINISHES.map((f) => f.name).join(", ") : "none loaded; use colours and look overrides";
@@ -69,6 +64,16 @@ degrees} (Y up in view space).
 ${look}
 - render_sheet queues a final, full-quality contact sheet for the user. Only use it when the user \
 asks for a render.
+
+Surface textures:
+- For any surface texture or decorative relief (hammered, beaten or planished metal; tamped or \
+repoussé; coral; organic undulation; ripples or contour lines; stippling; halftone dots or blobs; a \
+dotted grille), call load_texture_skill first and follow it. It maps such words to the texture kit \
+\`TEX\` and gives the sizes that build fast. Never improvise a texture from many small booleans \
+(hundreds of sphere or cylinder cuts): they time out or come back invalid.
+- add_texture_kit appends the kit to the script (or updates an older copy); then call \`TEX\` from \
+\`main\` with edit_script. Expose the texture's look as parameters (pattern options, depth, step, \
+seed). The kit block is folded in the script you are shown; read_script with full: true shows it.
 
 Selected faces:
 - The user can click faces in the viewer. Then the turn's <studio-context> has a "Selected \
@@ -134,7 +139,7 @@ ${describeSelection(selection, units)}${
 Part: ${part}.js
 Units: the script is in ${UNIT_LABELS[units]} (${units}); the user reads ${UNIT_LABELS[reads]} (${reads}).
 Current script:
-${numbered(script ?? "")}
+${numberedFolding(script ?? "", TEXTURE_KIT)}
 Scene: ${JSON.stringify(scene)}
 Last build: ${JSON.stringify(b)}${sel}
 </studio-context>`;
@@ -221,9 +226,30 @@ export function agentTools(part: string, opts: { vision?: boolean } = {}) {
 
   return {
     read_script: tool({
-      description: "Read the current part script, with line numbers.",
+      description:
+        "Read the current part script, with line numbers. An unchanged texture kit block is folded into one line unless `full` is true.",
+      inputSchema: z.object({ full: z.boolean().optional() }),
+      execute: guard(async ({ full }: { full?: boolean }) => ({ script: numberedFolding(await scriptOf(part), TEXTURE_KIT, !!full) })),
+    }),
+    load_texture_skill: tool({
+      description:
+        "The texture skill: how to add organic surface textures (hammered, pillows, coral, undulation, contours, halftone metaballs; carved into a top face or a round wall, or as crisp embossed/debossed/pierced regions) with the texture kit TEX, with sizes, costs and failure fixes. Call it before adding or changing a texture.",
       inputSchema: z.object({}),
-      execute: guard(async () => ({ script: numbered(await scriptOf(part)) })),
+      execute: guard(async () => ({ ok: true, skill: TEXTURE_SKILL })),
+    }),
+    add_texture_kit: tool({
+      description:
+        "Append the texture kit (const TEX, about 350 lines between `// ---- gooey texture kit` markers) to the end of the script, or replace an existing kit block with the current version, then rebuild. The geometry does not change until main() calls TEX. Returns the build result.",
+      inputSchema: z.object({}),
+      execute: guard(async () => {
+        const before = await scriptOf(part);
+        const src = withTextureKit(before, TEXTURE_KIT);
+        if (src === before) return currentBuild(part, "the script already has the current texture kit");
+        const at = kitLines(src)!;
+        const out = withDiff(describeBuild(await saveAndBuild(part, src), src), before, src, part);
+        return { ...out, kit_lines: [at[0] + 1, at[1] + 1] };
+      }),
+      toModelOutput: withoutDiff,
     }),
     edit_script: tool({
       description:
