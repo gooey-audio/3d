@@ -12,10 +12,10 @@ const header = (from: string) => `// GENERATED from ${from} by gen-cad-skill.ts;
 //   bun src/lib/prompts/gen-cad-skill.ts
 `;
 
-const cad = body("skill/cad/SKILL.md");
+const cad = body("skill/gooey-3d-cad/SKILL.md");
 writeFileSync(
   path.join(here, "cad-skill.ts"),
-  `${header("engine/skill/cad/SKILL.md (front matter removed)")}export const CAD_SKILL: string = ${JSON.stringify(cad)};\n`,
+  `${header("engine/skill/gooey-3d-cad/SKILL.md (front matter removed)")}export const CAD_SKILL: string = ${JSON.stringify(cad)};\n`,
 );
 console.log(`wrote cad-skill.ts (${cad.length} chars)`);
 

@@ -1,15 +1,14 @@
 ---
-name: render
+name: gooey-3d-render
 description: Path-trace STLs, assembly manifests and scene files with the gooey-3d CLI (gooey-audio/3d, `gooey-3d render`). Covers quick looks at one part in different finishes, views and lighting, contact sheets of many STLs, committed renders kept current with `sync`/`check`, and finish libraries. Use whenever you change or generate a 3D part and need to see it, compare finishes, or refresh a project's renders.
 ---
 
 # Rendering with gooey-3d
 
 `gooey-3d render` is a headless GPU path tracer (Metal on macOS, Vulkan elsewhere).
-Install a release binary from gooey-audio/3d, or
-`cargo install --git https://github.com/gooey-audio/3d gooey-3d`. Check it with
-`gooey-3d --version`. It ships no finishes and knows no project: you pass STLs, and
-a finish library if you want named finishes.
+Check `gooey-3d --version` for render support. See
+[gooey-3d](../gooey-3d/SKILL.md) for installation and project setup. Supply a
+project finish library for named materials.
 
 ## 1. Look at a part you just changed
 
@@ -31,6 +30,18 @@ gooey-3d render stl a.stl b.stl@'#aa3322' --out .context/asm.png          # an a
 - `--env room` stages the part in a room (needs the room finishes in the library).
   `--env studio` is the default, and `--env file.hdr` uses an HDRI. Use
   `--background transparent` for an RGBA cut-out.
+
+### Render a CAD assembly
+
+```sh
+gooey-3d cad build cad/assemblies/product.js --out out/product --render --library materials.json
+gooey-3d render scene out/product/assembly.json --explode 1 --library materials.json --out .context/exploded.png
+gooey-3d render sheet out/product/parts/*.stl --out .context/parts.png
+```
+
+Use `--set 'hide_groups=["doors"]'` or `--set 'isolate=["PART"]'` for focused views.
+The manifest carries the materials and explode offsets from the CAD build.
+The contact sheet frames the meshes individually.
 
 ## 2. Compare finishes, views or many parts: contact sheets
 

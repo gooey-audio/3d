@@ -1,9 +1,8 @@
 // Loads a part script as an ES module and runs `main(replicad, params)`.
 //
-// The script is copied to a uniquely named temp file (so edits and repeated
-// builds re-evaluate) after a line-preserving rewrite of `import ... from
-// "replicad"` into reads of a global. Line and column numbers in stack traces
-// therefore match the user's file; `describeError` swaps the temp path back.
+// The script and its relative imports are copied to a unique temp directory (so edits and repeated
+// builds re-evaluate) after a line-preserving rewrite of Replicad and helper imports into reads of a global. Line numbers
+// match the original sources; `describeError` maps the temporary paths back.
 //
 // Script conventions (all but `main` optional):
 //   export function main(replicad, params) -> shape | shape[] | {shape}
@@ -12,9 +11,9 @@
 //   export const paramRanges = { name: [min, max], ... }   (numeric params only)
 //   export const expect = { pieces, genus }  or  (params) => ({ pieces, genus })
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isWasmException } from "./kernel-errors.ts";
 
@@ -29,7 +28,7 @@ let counter = 0;
 
 export type Params = Record<string, unknown>;
 export type Ranges = Record<string, [number, number]>;
-export type Expect = { pieces?: number; genus?: number };
+export type Expect = { pieces?: number; genus?: number; parts?: Record<string, Omit<Expect, "parts">> };
 
 export type ScriptModule = {
   main: (replicad: unknown, params: Params) => unknown;
@@ -66,7 +65,7 @@ export function scriptUnits(module: ScriptModule, fallback: Units = DEFAULT_UNIT
   return u;
 }
 
-export type Prepared = { tempPath: string; scriptPath: string };
+export type Prepared = { dir: string; tempPath: string; sources: Map<string, string>; declaredUnits?: Units };
 export type Loaded = Prepared & { module: ScriptModule };
 
 // Plain field assignment, not a parameter property: Node's type stripping
@@ -79,60 +78,113 @@ export class ScriptError extends Error {
   }
 }
 
-// `import { a, b as c } from "replicad"` -> `const { a, b: c } = globalThis.__gooeyCad.replicad;`
-// Each rewrite stays on one line so later line numbers do not move.
+// Skip comments and quoted source text when looking for import statements.
+const comments = String.raw`//[^\n]*|/\*[\s\S]*?\*/`;
+const quoted = String.raw`"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|` +
+  "`(?:\\\\[\\s\\S]|[^`\\\\])*`";
+const trivia = String.raw`(?:\s|${comments})`;
+
+// Preserve the newline count of the complete import, including a wrapped "from".
 function rewriteImports(source: string): string {
-  const from = String.raw`\s+from\s+["']replicad["'];?`;
-  const g = `globalThis.${GLOBAL}.replicad`;
-  return source
-    .replace(new RegExp(String.raw`import\s+\*\s+as\s+([\w$]+)` + from, "g"), `const $1 = ${g};`)
-    .replace(new RegExp(String.raw`import\s*{([^}]*)}` + from, "g"), (_m, names: string) => {
-      const list = names
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((s) => s.replace(/\s+as\s+/, ": "));
-      // Keep the original newline count inside multi-line import lists.
-      const pad = "\n".repeat((names.match(/\n/g) ?? []).length);
-      return `const { ${list.join(", ")} } = ${g};${pad}`;
-    })
-    .replace(new RegExp(String.raw`import\s+([\w$]+)` + from, "g"), `const $1 = ${g};`);
+  const imports = new RegExp(
+    `${comments}|${quoted}|` + String.raw`\bimport${trivia}*(?<binding>\*\s+as\s+[\w$]+|{[^}]*}|[\w$]+)${trivia}*from${trivia}*["'](?<mod>replicad|gooey-3d)["'];?`,
+    "g",
+  );
+  return source.replace(imports, (match, binding, mod) => {
+    if (!mod) return match;
+    const target = `globalThis.${GLOBAL}.${mod === "replicad" ? mod : "gooey"}`;
+    const pad = "\n".repeat((match.match(/\n/g) ?? []).length);
+    if (!binding.startsWith("{")) {
+      const local = binding.split(/\s+/).at(-1);
+      return `const ${local} = ${target};${pad}`;
+    }
+    const list = binding.slice(1, -1).replace(new RegExp(comments, "g"), "").split(",")
+      .map((s: string) => s.trim().replace(/\s+as\s+/, ": "))
+      .filter(Boolean);
+    return `const { ${list.join(", ")} } = ${target};${pad}`;
+  });
 }
 
-// Copies the script to a fresh temp module. Kept separate from `importScript`
-// so the caller can map errors raised while importing back to the script.
 export function prepareScript(scriptPath: string): Prepared {
-  let source: string;
-  try {
-    source = readFileSync(scriptPath, "utf8");
-  } catch (err) {
-    throw new ScriptError(`cannot read script: ${(err as Error).message}`);
+  scriptPath = resolve(scriptPath);
+  const files = new Map<string, string>();
+  // Import declarations, re-exports and literal import() calls use the same
+  // specifier in the mirrored tree, including cycles.
+  const imports = new RegExp(
+    `${comments}|${quoted}|` + String.raw`(?:\bfrom${trivia}*|\bimport${trivia}*(?:\(${trivia}*)?)(["'])(\.\.?\/[^"'\n]+)\1`,
+    "g",
+  );
+  function visit(path: string) {
+    if (files.has(path)) return;
+    let source: string;
+    try {
+      source = readFileSync(path, "utf8");
+    } catch (err) {
+      const error = new ScriptError(`cannot read script: ${(err as Error).message}`);
+      Object.assign(error, { location: { file: path } });
+      throw error;
+    }
+    files.set(path, source);
+    for (const [, , specifier] of source.matchAll(imports)) {
+      if (specifier) visit(resolve(dirname(path), specifier));
+    }
   }
-  const ext = extname(scriptPath) === ".ts" ? ".ts" : ".mjs";
-  const tempPath = join(tempRoot, `${basename(scriptPath, extname(scriptPath))}-${++counter}${ext}`);
-  writeFileSync(tempPath, rewriteImports(source));
-  return { tempPath, scriptPath };
+  visit(scriptPath);
+  let root = dirname(scriptPath);
+  for (const path of files.keys()) {
+    while (relative(root, path).startsWith(`..${sep}`)) root = dirname(root);
+  }
+  const dir = join(tempRoot, String(++counter));
+  mkdirSync(dir);
+  writeFileSync(join(dir, "package.json"), '{"type":"module"}');
+  const sources = new Map<string, string>();
+  // Keep control files outside the mirrored tree so a local package.json is
+  // safe to import as data.
+  const tree = join(dir, "src");
+  try {
+    for (const [path, source] of files) {
+      const dest = join(tree, relative(root, path));
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, rewriteImports(source));
+      sources.set(dest, path);
+    }
+  } catch (err) {
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  const unitDeclaration = new RegExp(
+    `${comments}|${quoted}|` + String.raw`\bexport${trivia}+const${trivia}+units${trivia}*=${trivia}*["']([^"']+)["'](?=\s*(?:;|$|as\b|satisfies\b))`,
+    "gm",
+  );
+  const [, declared] = [...files.get(scriptPath)!.matchAll(unitDeclaration)].find((match) => match[1]) ?? [];
+  return {
+    dir, sources, tempPath: join(tree, relative(root, scriptPath)),
+    declaredUnits: parseUnits(declared) ?? undefined,
+  };
 }
 
-export async function importScript(prepared: Prepared, replicad: unknown): Promise<Loaded> {
-  (globalThis as any)[GLOBAL] = { replicad };
+export async function importScript(prepared: Prepared, replicad: unknown, gooey: unknown): Promise<Loaded> {
+  (globalThis as any)[GLOBAL] = { replicad, gooey };
+  let module: ScriptModule;
   try {
-    let module: ScriptModule;
-    try {
-      module = (await import(pathToFileURL(prepared.tempPath).href)) as ScriptModule;
-    } catch (err) {
-      // Node's module loader reports syntax errors without a location; its
-      // `--check` mode prints one.
-      if (!isBun && err instanceof SyntaxError) (err as any).location ??= nodeCheck(prepared.tempPath);
-      throw err;
+    module = (await import(pathToFileURL(prepared.tempPath).href)) as ScriptModule;
+  } catch (err) {
+    // Node's module loader reports syntax errors without a location.
+    if (!isBun && err instanceof SyntaxError) {
+      for (const [temp, file] of prepared.sources) {
+        const where = nodeCheck(temp);
+        if (where) {
+          (err as any).location ??= { file, ...where };
+          break;
+        }
+      }
     }
-    if (typeof module.main !== "function") {
-      throw new ScriptError("script does not export a function `main(replicad, params)`");
-    }
-    return { ...prepared, module };
-  } finally {
-    rmSync(prepared.tempPath, { force: true });
+    throw err;
   }
+  if (typeof module.main !== "function") {
+    throw new ScriptError("script does not export a function `main(replicad, params)`");
+  }
+  return { ...prepared, module };
 }
 
 // `node --check FILE` prints `FILE:LINE`, the source line and a caret row.
@@ -232,11 +284,25 @@ export function resolveExpect(module: ScriptModule, params: Params): Expect | nu
   if (typeof e !== "object" || e === null || Array.isArray(e)) {
     throw new ScriptError("`expect` must be an object like { pieces: 1, genus: 4 } or a function returning one");
   }
+  return parseExpect(e, "expect", true);
+}
+
+function parseExpect(e: object, label: string, allowParts: boolean): Expect {
   const out: Expect = {};
   for (const [k, v] of Object.entries(e)) {
-    if (k !== "pieces" && k !== "genus") throw new ScriptError(`expect.${k}: unknown key (pieces, genus)`);
+    if (k === "parts" && allowParts) {
+      if (!v || typeof v !== "object" || Array.isArray(v)) throw new ScriptError(`${label}.parts must be an object`);
+      out.parts = Object.fromEntries(Object.entries(v).map(([name, value]) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          throw new ScriptError(`${label}.parts.${name} must be an object`);
+        }
+        return [name, parseExpect(value, `${label}.parts.${name}`, false)];
+      }));
+      continue;
+    }
+    if (k !== "pieces" && k !== "genus") throw new ScriptError(`${label}.${k}: unknown key`);
     if (v === undefined) continue;
-    if (!Number.isInteger(v) || (v as number) < 0) throw new ScriptError(`expect.${k} must be a non-negative integer`);
+    if (!Number.isInteger(v) || (v as number) < 0) throw new ScriptError(`${label}.${k} must be a non-negative integer`);
     out[k] = v as number;
   }
   return out;
@@ -247,6 +313,7 @@ export function resolveExpect(module: ScriptModule, params: Params): Expect | nu
 export type ErrorInfo = {
   kind: string; // script | syntax | params | kernel | limits | trap | protocol
   message: string;
+  file?: string;
   line?: number;
   column?: number;
   stack?: string;
@@ -269,20 +336,15 @@ export function describeError(err: unknown, oc: any, loaded?: Prepared): ErrorIn
     info = { kind: "kernel", message: `OpenCascade ${type}${message ? `: ${message}` : ""}`, stack: (err as any).stack };
   } else if (err instanceof WebAssembly.RuntimeError) {
     info = { kind: "trap", message: `WASM trap: ${err.message}`, stack: err.stack };
-  } else if (isBuildMessage(err)) {
-    // Bun reports module parse errors as a BuildMessage, not an Error.
-    const { line, column } = (err as any).position; // both 1-based
-    const message = `SyntaxError: ${(err as any).message}`;
-    info = { kind: "syntax", message, line, column, stack: `${message}\n    at ${loaded?.tempPath}:${line}:${column}` };
-  } else if (buildMessages(err).length) {
-    // Several parse errors: an AggregateError ("N errors building PATH") of
-    // BuildMessages. Point at the first, list them all as `file:line:col: ...`.
-    const msgs = buildMessages(err);
-    const { line, column } = msgs[0].position;
-    const name = loaded ? basename(loaded.scriptPath) : "script";
-    const list = msgs.map((m) => `${name}:${m.position.line}:${m.position.column}: ${m.message}`);
+  } else if (isBuildMessage(err) || buildMessages(err).length) {
+    const msgs = isBuildMessage(err) ? [err as BuildMessage] : buildMessages(err);
+    const { file, line, column } = msgs[0].position;
+    const list = msgs.map((m) => {
+      const p = m.position;
+      return `${basename(loaded?.sources.get(p.file ?? "") ?? p.file ?? "script")}:${p.line}:${p.column}: ${m.message}`;
+    });
     const message = `SyntaxError: ${msgs[0].message}${msgs.length > 1 ? ` (${msgs.length} errors)\n${list.join("\n")}` : ""}`;
-    info = { kind: "syntax", message, line, column, stack: `${message}\n    at ${loaded?.tempPath}:${line}:${column}` };
+    info = { kind: "syntax", message, line, column, file: loaded?.sources.get(file ?? "") };
   } else if (err instanceof Error) {
     const kind = err.name === "SyntaxError" ? "syntax" : ((err as ScriptError).kind ?? "script");
     info = { kind, message: err.name === "SyntaxError" ? `SyntaxError: ${err.message}` : err.message, stack: err.stack };
@@ -292,20 +354,11 @@ export function describeError(err: unknown, oc: any, loaded?: Prepared): ErrorIn
     info = { kind: "script", message: `non-Error thrown: ${String(err)}` };
   }
   if (loaded) {
-    const swap = (s: string, to: string) =>
-      [pathToFileURL(loaded.tempPath).href, loaded.tempPath].reduce((acc, from) => acc.split(from).join(to), s);
-    // Messages name the script by its file name: the host's directories (often
-    // temp dirs) are noise. Stacks keep full paths (`locate` reads them).
-    const name = basename(loaded.scriptPath);
-    info.message = [pathToFileURL(loaded.scriptPath).href, loaded.scriptPath].reduce(
-      (acc, from) => acc.split(from).join(name),
-      swap(info.message, name),
-    );
-    if (info.stack) {
-      info.stack = swap(info.stack, loaded.scriptPath);
-      if (info.line === undefined) {
-        const where = locate(info.stack, loaded.scriptPath);
-        if (where) Object.assign(info, where);
+    if (info.stack && info.line === undefined) Object.assign(info, locate(info.stack, loaded.sources));
+    for (const [temp, source] of loaded.sources) {
+      for (const from of [pathToFileURL(temp).href, temp]) {
+        info.message = info.message.split(from).join(basename(source));
+        if (info.stack) info.stack = info.stack.split(from).join(source);
       }
     }
   }
@@ -316,7 +369,7 @@ function isBuildMessage(err: unknown): boolean {
   return !!err && typeof err === "object" && (err as any).name === "BuildMessage" && !!(err as any).position;
 }
 
-type BuildMessage = { message: string; position: { line: number; column: number } };
+type BuildMessage = { message: string; position: { file?: string; line: number; column: number } };
 
 // The BuildMessages of an AggregateError (Bun, a script with several parse errors).
 function buildMessages(err: unknown): BuildMessage[] {
@@ -325,9 +378,18 @@ function buildMessages(err: unknown): BuildMessage[] {
 }
 
 // First stack frame (or SyntaxError header) that points into the user's script.
-function locate(stack: string, scriptPath: string): { line: number; column?: number } | undefined {
-  const esc = scriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const m = stack.match(new RegExp(`${esc}:(\\d+)(?::(\\d+))?`));
-  if (!m) return undefined;
-  return { line: Number(m[1]), column: m[2] ? Number(m[2]) : undefined };
+function locate(stack: string, sources: Map<string, string>): Pick<ErrorInfo, "file" | "line" | "column"> {
+  let first = Infinity;
+  let location = {};
+  for (const [temp, file] of sources) {
+    for (const path of [temp, pathToFileURL(temp).href]) {
+      const esc = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const m = stack.match(new RegExp(`${esc}:(\\d+)(?::(\\d+))?`));
+      if (m && m.index! < first) {
+        first = m.index!;
+        location = { file, line: Number(m[1]), column: m[2] ? Number(m[2]) : undefined };
+      }
+    }
+  }
+  return location;
 }

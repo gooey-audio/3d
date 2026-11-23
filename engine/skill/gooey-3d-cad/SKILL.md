@@ -1,6 +1,6 @@
 ---
-name: cad
-description: Write and edit parametric 3D parts as Replicad scripts (JavaScript on OpenCascade) and build them into validated STL + STEP with the gooey-3d CLI (gooey-audio/3d, `gooey-3d cad build|check|params`). Covers the script conventions (main, units, defaultParams, paramRanges, expect), parameter overrides, structured errors with script line numbers, exit codes, and the Replicad API basics. Use whenever you create or change a part script, need an STL/STEP of a part, or a cad build fails.
+name: gooey-3d-cad
+description: Write and edit parametric 3D parts and assemblies as Replicad scripts (JavaScript on OpenCascade) and build them into validated STL + STEP with the gooey-3d CLI (gooey-audio/3d, `gooey-3d cad build|check|params`). Covers the script conventions (main, units, defaultParams, paramRanges, expect), parameter overrides, structured errors with script line numbers, exit codes, and the Replicad API basics. Use whenever you create or change a part script, need an STL/STEP of a part, or a cad build fails.
 ---
 
 # Parametric parts with `gooey-3d cad`
@@ -23,7 +23,7 @@ gooey-3d cad params part.js                       # defaultParams and paramRange
 gooey-3d cad check part.js [--set name=value ...] # build + validate, keep no files
 gooey-3d cad build part.js --out DIR [--set name=value ...] [--json]
     # -> DIR/part.stl, DIR/part.step, DIR/report.json
-gooey-3d render stl DIR/part.stl --out .context/part.png   # then LOOK at it
+gooey-3d render stl DIR/part.stl --out .context/part.png   # open the PNG
 ```
 
 Options:
@@ -32,6 +32,8 @@ Options:
 - `--units in|cm|mm` sets the units of a script without `export const units`
   (default `$GOOEY_UNITS`, else `in`).
 - `--allow-out-of-range` accepts values outside `paramRanges`.
+- `--allow-interference` records assembly overlaps above 1 mm³ and allows the build.
+- `--render [PNG]` builds an iso studio preview. Pass `--library FILE` if the project does not declare the finish library.
 - `--timeout S` sets the build limit (default 30 s).
 - `--tolerance MM` sets the mesh tolerance.
 - `--material pla|tpu` and `--bed MM` set up the printability report.
@@ -42,12 +44,12 @@ Exit codes:
 | Code | Meaning | What to do |
 |---|---|---|
 | 0 | ok | Read the summary or `report.json`, and render the part. |
-| 2 | Your script or its inputs | `script`, `syntax`, `params`, `kernel`, `limits`, `invalid` or `expect`: fix the script at the reported line, or the params. |
+| 2 | Your script or its inputs | `script`, `syntax`, `params`, `kernel`, `limits`, `invalid`, `interference` or `expect`: fix the script at the reported line, or the params. |
 | 3 | `timeout` | The worker was killed. Look for an infinite loop, a huge part, or thousands of tiny features; only raise `--timeout` if the part is merely slow. |
 | 4 | `worker` missing, `crash` or `trap` | A tooling problem. Rebuild the worker and report it. |
 
 Errors print as `part.js:LINE:COL: KIND error: MESSAGE`. With `--json` they are
-`{"ok": false, "error": {"kind", "message", "line", "column"}}`. A failed build
+`{"ok": false, "error": {"kind", "message", "file", "line", "column"}}`. A failed build
 writes nothing.
 
 ## 2. Script conventions
@@ -75,9 +77,10 @@ export function main(replicad, params) {   // or: main({ draw, makeCylinder }, p
   an inch part is `5.5 / 25.4`.
 - `params` is `{...defaultParams, ...overrides}`. Unknown names fail (`params`).
   `--set` values are read as the default's type.
-- Use `import { ... } from "replicad"` at the top or destructure the first argument
-  of `main`. No other imports: the script is copied to a temp directory, so relative
-  imports do not resolve.
+- Import from `"replicad"`, `"gooey-3d"`, or relative paths with explicit file
+  extensions. Relative imports work transitively. The entry module supplies
+  `main`, parameters, units and expectations. A dependency may also serve as a
+  standalone entry. Errors identify the source file and line.
 - `console.log` goes to stderr; it is fine for debugging.
 - Write a frame comment at the top (Z up, where the origin is) and keep
   dimensions as named params. Explicit frames make local edits reliable.
@@ -86,6 +89,63 @@ export function main(replicad, params) {   // or: main({ draw, makeCylinder }, p
   summed over pieces. Add `expect` to every part that has holes.
 - `paramRanges` bounds what explorers (jitter, batch) may try. Make the ranges
   ones the part survives.
+
+## Assembly scripts and helpers
+
+```js
+import { assembly, panel, part, place } from "gooey-3d";
+import { shelf } from "../parts/shelf.js";
+
+export const units = "mm";
+export const expect = { pieces: 2, parts: { shelf: { genus: 0 } } };
+export function main() {
+  return assembly([
+    part("base", panel(300, 200, 18), { material: "wood/oak" }),
+    part("shelf", place(shelf({ width: 280, depth: 180, t: 18 }), { at: [10, 10, 150] }),
+      { material: "#ddd1b9", group: "interior", explode: [0, 0, 80] }),
+  ], { name: "Shelf example" });
+}
+```
+
+- `units`, `mm(n)`, `inch(n)` use the entry script's units. Declare units
+  with a literal `export const units = "mm"` if converting module-level values.
+- `panel(w, h, t, {name?, grain?})` runs from the origin to `[w, h, t]`.
+  It records blank dimensions and optional grain (e.g. `"x"`) for the cut list.
+  Stock metadata follows the helpers' transforms and machining. After direct
+  Replicad operations, carry it forward explicitly with `part(..., { meta })`.
+- `place(shape, {at?, rotate?})` rotates in X, Y, Z order about the origin
+  using degrees, then translates. `mirrorPart(shape, normal?, origin?)` mirrors
+  through a plane (defaults to the YZ plane through the origin).
+- `grid(nx, ny, dx, dy)`, `line(n, pitch)` and `circle(n, r)` return 2D points
+  relative to the origin. `drill(shape, points, dia, {depth?, from?})` starts
+  at the selected bounding face (`"+z"` by default) and cuts inward, through
+  the part if depth is omitted. Point coordinates use the other two axes in
+  XYZ order, so `from: "+x"` takes `[y, z]`. `counterbore(shape, points, dia,
+  {boreDia, boreDepth, depth?, from?})` adds a wider recess at the hole entrance.
+- `groove(shape, {axis, at, width, depth, face?})` cuts along `axis`, centred
+  at `at` on the remaining in-plane axis, inward from `face` (default `"+z"`).
+  `rabbet(shape, {edge, width, depth})` cuts into +Z along a panel edge
+  (`"+x"`, `"-x"`, `"+y"` or `"-y"`).
+- `boxOfPanels({width, height, depth, t, back?, joinery?, top?, bottom?})`
+  returns placed `left`, `right`, `top`, `bottom` and optionally `back` parts.
+  X is width, Y runs from front to back and Z is up. Use `back: {t, inset}` to
+  add the rear panel and `"butt"`, `"dado"` or `"rabbet"` for deck joints.
+  Dado and rabbet builds recess the frame for the back.
+- `part(name, shape, {material?, qty?, group?, explode?, meta?})` takes a
+  shape already placed in assembly coordinates. Use unique names made of
+  letters, digits, underscores and hyphens. `qty` applies to the BOM and
+  defaults to one. Name each separately placed copy when showing more than one.
+  `material` accepts a library finish, hex colour, or render material object.
+- `assembly(parts, {name?})` returns the named parts. The raw `{parts: [...]}`
+  contract accepts the same fields. Whole expectations sum the pieces and
+  genus of the parts. Use `expect.parts.<name>` for part-specific checks.
+
+Builds write the combined STL and named STEP, `parts/<name>.stl|step`,
+`assembly.json`, `bom.csv`, and `report.json`. The BOM groups stock blanks
+by dimensions, grain and material. Generic parts use sorted bounding dimensions
+with thickness smallest, and matching translated meshes share a row. See the
+[cabinet fixture](../../fixtures/cad/cabinet/cabinet.js) and its
+[importable shelf script](../../fixtures/cad/cabinet/shelf.js).
 
 ## 3. The brace example
 
@@ -114,9 +174,6 @@ Typical failures and what they mean:
   division by a zero param).
 
 ## 4. Replicad 1.2.1 cheat sheet
-
-The full helper vocabulary (holes, patterns, finder shortcuts) comes later. Today,
-use the plain API and JS loops.
 
 **2D drawing (pen).** Start with `draw([x, y])`, then chain:
 

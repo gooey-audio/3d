@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Copy to scripts/gooey-3d in a consumer repo and commit .gooey-3d-version.
+set -euo pipefail
+die() { printf 'gooey-3d: %s\n' "$*" >&2; exit 1; }
+
+if [[ ${GOOEY_3D_DEV:-0} == 1 ]]; then
+  while IFS= read -r dev; do
+    [[ "$dev" -ef "$0" ]] || exec "$dev" "$@"
+  done < <(type -aP gooey-3d)
+  die 'GOOEY_3D_DEV=1 needs an installed gooey-3d on PATH'
+fi
+
+root=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+pin=$root/.gooey-3d-version
+[[ -r "$pin" ]] || die "missing $pin (write a release tag such as v0.3.0)"
+version=$(cat "$pin")
+[[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[[:alnum:].-]+)?$ ]] || die "invalid release version in $pin"
+version=v${version#v}
+
+case "$(uname -s)/$(uname -m)" in
+  Darwin/arm64) target=aarch64-apple-darwin ;;
+  Darwin/x86_64) target=x86_64-apple-darwin ;;
+  Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
+  *) die 'no release archive for this platform (use GOOEY_3D_DEV=1 with a local build)' ;;
+esac
+
+name=gooey-3d-$version-$target
+cache=${XDG_CACHE_HOME:-"$HOME/.cache"}/gooey-3d/$version
+bin=$cache/$target
+if [[ ! -x "$bin/gooey-3d" || ! -x "$bin/gooey-cad-worker" ]]; then
+  mkdir -p "$cache"
+  stage=$(mktemp -d "$cache/.download.XXXXXX")
+  trap 'rm -rf -- "$stage"' EXIT
+  archive=$name.tar.gz
+  url=https://github.com/gooey-audio/3d/releases/download/$version/$archive
+  curl --fail --silent --show-error --location --retry 2 --output "$stage/$archive" "$url"
+  curl --fail --silent --show-error --location --retry 2 --output "$stage/$archive.sha256" "$url.sha256"
+  read -r checksum _ < "$stage/$archive.sha256"
+  [[ "$checksum" =~ ^[[:xdigit:]]{64}$ ]] || die 'invalid release checksum'
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$stage/$archive")
+  else
+    actual=$(shasum -a 256 "$stage/$archive")
+  fi
+  [[ ${actual%% *} == "$checksum" ]] || die "checksum mismatch for $archive"
+  tar -xzf "$stage/$archive" -C "$stage"
+  for program in gooey-3d gooey-cad-worker; do
+    [[ -x "$stage/$name/$program" ]] || die "archive is missing executable $program"
+  done
+  mkdir -p "$bin"
+  # Both files come from the same verified archive. Each rename is atomic,
+  # and concurrent downloads of the same release publish identical files.
+  mv -f -- "$stage/$name/gooey-cad-worker" "$bin/gooey-cad-worker"
+  mv -f -- "$stage/$name/gooey-3d" "$bin/gooey-3d"
+  rm -rf -- "$stage"
+  trap - EXIT
+fi
+
+exec "$bin/gooey-3d" "$@"

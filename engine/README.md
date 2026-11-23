@@ -26,9 +26,14 @@ crates/cad            gooey-cad: runs the cad-worker, validates its output with 
 crates/gooey-3d       the `gooey-3d` CLI: `mould build|check`, `cad build|check|params|serve`, `render stl|sheet|plan|tiles|compose|scene|...`
 cad-worker/           gooey-cad-worker: Replicad + OpenCascade WASM in a Bun executable (TypeScript)
 fixtures/             synthetic parts and reports (castkit), fixtures/cad (part scripts), fixtures/render (renderer)
-skill/cast-moulds/    agent skill: choosing, building, checking and printing moulds
-skill/cad/            agent skill: part scripts, cad build/check/params
-skill/render/         agent skill: ad hoc renders, contact sheets, scenes
+fixtures/cad/cabinet/ reference assembly and standalone shelf module
+scripts/install       install local binaries and link shared skills
+scripts/gooey-3d-pinned
+                      launcher template for consumer projects
+skill/gooey-3d/       agent skill: project setup, CAD assemblies and previews
+skill/gooey-3d-cad/   agent skill: Replicad scripts, helpers and validation
+skill/gooey-3d-render/ agent skill: renders, contact sheets and scenes
+skill/gooey-3d-moulds/ agent skill: casting moulds and printability
 skill/textures/       agent skill + texture kit: hammered, coral, organic and halftone surface textures
 ```
 
@@ -42,6 +47,25 @@ skill/textures/       agent skill + texture kit: hammered, coral, organic and ha
   from source, build it with `cad-worker/build.sh` (needs [bun](https://bun.sh)).
 - **Node:** pin the release tarball by URL in `package.json`:
   `"castkit-wasm": "https://github.com/gooey-audio/3d/releases/download/vX.Y.Z/castkit-wasm-vX.Y.Z.tgz"`.
+
+### Install for other projects
+
+From this checkout, run `scripts/install` in `engine/`. It builds both
+executables, installs them to `${PREFIX:-$HOME/.local/bin}`, and links the bundled
+skills under `~/.agents/skills` and `~/.claude/skills`. Use `--prefix BIN_DIR`
+to choose the bin directory, `--no-build` to reuse the built files, or
+`--skills-only` to link just the skills. Ensure the bin directory is on PATH
+and run `gooey-3d --version`.
+
+For CI and committed renders, copy [the pinned launcher](scripts/gooey-3d-pinned)
+to the consumer's `scripts/gooey-3d` and commit `.gooey-3d-version` alongside it
+at the project root. The version file holds a published tag. The launcher
+downloads and verifies the CLI and worker archive once per host target and
+version. Set `GOOEY_3D_DEV=1` to use the installed CLI on PATH instead.
+See the [shared skill](skill/gooey-3d/SKILL.md) for project layout,
+[CAD](skill/gooey-3d-cad/SKILL.md) for helpers,
+[rendering](skill/gooey-3d-render/SKILL.md) for scene files, and
+[moulds](skill/gooey-3d-moulds/SKILL.md) for casting.
 
 ## Moulds
 
@@ -109,7 +133,7 @@ gooey-3d cad check part.js --units cm                                   # an und
 A script exports `main(replicad, params)` returning a solid, `defaultParams`, and
 optionally `paramRanges = {name: [min, max]}` and `expect = {pieces, genus}` (or a
 function of the params). See [`fixtures/cad/brace.js`](fixtures/cad/brace.js) and
-[`skill/cad/SKILL.md`](skill/cad/SKILL.md). Organic surface textures (hammered, coral,
+[`skill/gooey-3d-cad/SKILL.md`](skill/gooey-3d-cad/SKILL.md). Organic surface textures (hammered, coral,
 contour ripples, halftone dots) come from the texture kit in
 [`skill/textures/`](skill/textures/SKILL.md).
 
@@ -149,7 +173,7 @@ and the STL triangle range (`start`, `count`) that tessellates it. It also has t
 worker and kernel versions and the seconds spent in each stage. Outputs are staged
 and renamed into place only when everything passes; a failed build writes nothing.
 
-Errors are `{kind, message, line, column}`, with the line in your script:
+Errors include `{kind, message, file, line, column}`. Locations can point to imported files.
 
 ```
 $ gooey-3d cad build brace.js --out out --set filletR=25 --allow-out-of-range
@@ -159,7 +183,7 @@ gooey-3d: cad: brace.js:64:36: kernel error: OpenCascade StdFail_NotDone: BRep_A
 | Exit | Meaning |
 |---|---|
 | 0 | ok |
-| 2 | `script`, `syntax`, `params`, `kernel`, `limits`, `invalid` or `expect` error, or bad usage |
+| 2 | `script`, `syntax`, `params`, `kernel`, `limits`, `invalid`, `interference` or `expect` error, or bad usage |
 | 3 | `timeout`: no result within `--timeout` (default 30 s); the worker was killed |
 | 4 | `worker` missing or unstartable, `crash`, or `trap` |
 
@@ -168,6 +192,28 @@ gooey-3d: cad: brace.js:64:36: kernel error: OpenCascade StdFail_NotDone: BRep_A
 reports the first one's line and column, and lists them all in `message` as
 `part.js:LINE:COL: ...`.
 
+### Assemblies
+
+Scripts can share code through relative imports with explicit extensions. Import
+stock, placement, machining and assembly helpers from `"gooey-3d"`, and return
+`assembly([part(name, shape, options), ...], {name})` from the entry script.
+Place each shape in assembly coordinates, give every part a unique file-safe
+name, and use `expect.parts` for per-part checks. Each part must pass geometry
+validation. Intersections above 1 mm³ fail unless `--allow-interference` is set.
+For allowed overlaps, the report includes the interfering pair and its volume.
+
+```sh
+gooey-3d cad build fixtures/cad/cabinet/cabinet.js --out out/cab --render --library fixtures/render/materials.json
+gooey-3d render scene out/cab/assembly.json --explode 1 --library fixtures/render/materials.json --out out/cab-exploded.png
+```
+
+The [reference cabinet](fixtures/cad/cabinet/cabinet.js) imports a standalone
+[shelf](fixtures/cad/cabinet/shelf.js). The build writes combined STL and named
+STEP files, individual files under `parts/`, a scene-ready `assembly.json`,
+and `bom.csv` with cut dimensions in script units. The generated manifest
+includes part materials, groups and explode offsets. See the
+[CAD skill](skill/gooey-3d-cad/SKILL.md) for helper arguments and examples.
+
 **Serving builds.** `gooey-3d cad serve` keeps one warm worker and answers
 JSON-lines requests on stdin with one JSON line each on stdout, in order, so
 callers (the hosted studio's Modal service) skip worker start-up and OpenCascade
@@ -175,7 +221,7 @@ init on every build:
 
 ```sh
 $ gooey-3d cad serve
-{"ready":true,"protocol":1,"startup_seconds":0.107,"version":"0.1.0","versions":{...}}
+{"ready":true,"protocol":1,"startup_seconds":0.107,"version":"0.3.0","versions":{...}}
 {"id":1,"op":"build","script":"brace.js","params":{"length":140},"out":"out/b140","step":false}
 {"id":1,"ok":true,"outputs":{"stl":"out/b140/brace.stl","step":null,"report":"out/b140/report.json"},"report":{...}}
 {"id":2,"op":"params","script":"brace.js"}
@@ -184,7 +230,8 @@ $ gooey-3d cad serve
 
 A build answers what `cad build --json` prints (no `out`: validate only, like
 `cad check`), plus the request's `id`. Only `op` and `script` are required; `step`
-defaults to true, `allow_out_of_range` to false, and `timeout` (s), `tolerance`,
+defaults to true. `allow_out_of_range` and `allow_interference` default to false.
+`timeout` (s), `tolerance`,
 `material` and `bed` mirror the flags. Malformed requests get `kind: "protocol"`.
 The worker is replaced (between requests, so the next one finds it warm) after a
 timeout, trap or crash, and after `--max-jobs` jobs (300) or `--max-heap-mb` MB of

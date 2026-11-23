@@ -11,11 +11,13 @@
 //! call [`build_on`] / [`build_with`], recycling on [`Worker::jobs`] /
 //! [`Worker::heap_mb`] (as `gooey-3d cad serve` does).
 
+mod assembly;
 pub mod error;
 pub mod scratch;
 pub mod validate;
 pub mod worker;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -23,6 +25,7 @@ use castkit_core::check::{BED_MM, Printability};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+pub use assembly::{Interference, PartReport};
 pub use castkit_core::Material;
 pub use error::{CadError, ErrorKind};
 pub use scratch::TempDir;
@@ -105,6 +108,7 @@ pub struct Options {
     /// default's type by the worker.
     pub params: Map<String, Value>,
     pub allow_out_of_range: bool,
+    pub allow_interference: bool,
     /// Units of scripts that do not declare `export const units`.
     pub units: Units,
     /// Mesh tolerance (mm); `None` = max(0.01, 2e-5 × bounding-box diagonal).
@@ -124,6 +128,7 @@ impl Default for Options {
             timeout: DEFAULT_TIMEOUT,
             params: Map::new(),
             allow_out_of_range: false,
+            allow_interference: false,
             // An invalid $GOOEY_UNITS falls back here; front ends call
             // `Units::from_env` themselves to report it.
             units: Units::from_env().unwrap_or_default(),
@@ -157,6 +162,8 @@ pub struct Expect {
     pub pieces: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genus: Option<i32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parts: BTreeMap<String, Expect>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -208,6 +215,10 @@ pub struct Report {
     pub tolerance: Tolerance,
     pub printability: Printability,
     pub faces: Vec<Face>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<PartReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interferences: Vec<Interference>,
     /// Output file names (relative to the report).
     pub outputs: Map<String, Value>,
     /// gooey-cad, castkit and the worker's `{worker, replicad, opencascade, manifold, engine}`.
@@ -231,6 +242,8 @@ pub struct Written {
     pub stl: PathBuf,
     pub step: Option<PathBuf>,
     pub report: PathBuf,
+    pub assembly: Option<PathBuf>,
+    pub bom: Option<PathBuf>,
 }
 
 /// `defaultParams` and `paramRanges` of a script (spawns a worker).
@@ -344,7 +357,7 @@ pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> 
             format!("worker response lacks {what}"),
         ))
     };
-    if res.get("valid") != Some(&Value::Bool(true)) {
+    if res.get("parts").is_none() && res.get("valid") != Some(&Value::Bool(true)) {
         return Err(fail(CadError::new(
             ErrorKind::Invalid,
             "OpenCascade's BRepCheck rejects the solid (often a fillet, chamfer or shell too large for its faces, or a self-intersecting profile)",
@@ -356,36 +369,37 @@ pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> 
     };
     let per = units.mm_per_unit();
     let t_validate = Instant::now();
-    let stl = std::fs::read(&stl_path).map_err(|e| fail(io_err(&stl_path, e)))?;
-    let v = validate::validate(&stl, opts.material, opts.bed).map_err(fail)?;
-    let validate_secs = t_validate.elapsed().as_secs_f64();
-
     let expect: Option<Expect> = match res.get("expect") {
         None | Some(Value::Null) => None,
         Some(e) => Some(serde_json::from_value(e.clone()).map_err(|_| proto("a well-formed `expect`"))?),
     };
-    if let Some(e) = &expect {
-        let mut wrong = vec![];
-        if let Some(p) = e.pieces
-            && p != v.pieces
-        {
-            wrong.push(format!("pieces {p}, got {}", v.pieces));
-        }
-        if let Some(g) = e.genus
-            && g != v.genus
-        {
-            wrong.push(format!("genus {g}, got {}", v.genus));
-        }
-        if !wrong.is_empty() {
+    let assembly = res
+        .get("parts")
+        .map(|parts| {
+            let name = res
+                .get("assemblyName")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&stem);
+            assembly::Assembly::check(parts, name, dir, units, opts, expect.as_ref())
+        })
+        .transpose()
+        .map_err(fail)?;
+    let v = if let Some(a) = &assembly {
+        a.validation()
+    } else {
+        if expect.as_ref().is_some_and(|e| !e.parts.is_empty()) {
             return Err(fail(CadError::new(
                 ErrorKind::Expect,
-                format!(
-                    "expected {} (volume {}): holes merged or broke out, or the part split?",
-                    wrong.join("; "),
-                    fmt_volume(v.volume_mm3, units)
-                ),
+                "expect.parts requires an assembly",
             )));
         }
+        let stl = std::fs::read(&stl_path).map_err(|e| fail(io_err(&stl_path, e)))?;
+        validate::validate(&stl, opts.material, opts.bed).map_err(fail)?
+    };
+    let validate_secs = t_validate.elapsed().as_secs_f64();
+    if let Some(e) = &expect {
+        check_expect(e, &v, units).map_err(fail)?;
     }
 
     let faces: Vec<Face> = serde_json::from_value(res.get("faces").cloned().unwrap_or(json!([])))
@@ -408,6 +422,15 @@ pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> 
     if opts.step {
         out_names.insert("step".into(), format!("{stem}.step").into());
     }
+    let (parts, interferences) = if let Some(a) = assembly {
+        a.write(dir, units).map_err(fail)?;
+        out_names.insert("assembly".into(), "assembly.json".into());
+        out_names.insert("bom".into(), "bom.csv".into());
+        let hits = a.interferences.clone();
+        (a.reports(), hits)
+    } else {
+        (vec![], vec![])
+    };
     let (lo, hi) = v.bounds;
     Ok(Report {
         schema: REPORT_SCHEMA.into(),
@@ -438,6 +461,8 @@ pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> 
         tolerance,
         printability: v.printability,
         faces,
+        parts,
+        interferences,
         outputs: out_names,
         versions: json!({
             "gooey_cad": VERSION,
@@ -446,6 +471,31 @@ pub fn build_with(w: &mut Worker, script: &Path, opts: &Options, dir: &Path) -> 
         }),
         seconds,
     })
+}
+
+pub(crate) fn check_expect(e: &Expect, v: &validate::Validation, units: Units) -> Result<(), CadError> {
+    let mut wrong = vec![];
+    if let Some(p) = e.pieces
+        && p != v.pieces
+    {
+        wrong.push(format!("pieces {p}, got {}", v.pieces));
+    }
+    if let Some(g) = e.genus
+        && g != v.genus
+    {
+        wrong.push(format!("genus {g}, got {}", v.genus));
+    }
+    if wrong.is_empty() {
+        return Ok(());
+    }
+    Err(CadError::new(
+        ErrorKind::Expect,
+        format!(
+            "expected {} (volume {}): holes merged or broke out, or the part split?",
+            wrong.join("; "),
+            fmt_volume(v.volume_mm3, units)
+        ),
+    ))
 }
 
 fn spawn(opts: &Options) -> Result<Worker, CadError> {
@@ -458,25 +508,68 @@ fn spawn(opts: &Options) -> Result<Worker, CadError> {
 
 /// Renames the staged outputs into `dir`; `report.json` goes last.
 fn persist(report: &Report, staging: &Path, dir: &Path) -> Result<Written, CadError> {
-    let mv = |name: &str| -> Result<PathBuf, CadError> {
+    let mv = |name: &Path| -> Result<PathBuf, CadError> {
         let to = dir.join(name);
         std::fs::rename(staging.join(name), &to).map_err(|e| io_err(&to, e))?;
         Ok(to)
     };
-    let stl = mv(report.outputs["stl"].as_str().unwrap())?;
-    let step = match report.outputs.get("step").and_then(Value::as_str) {
-        Some(name) => Some(mv(name)?),
-        None => None,
+    let mv_output = |kind: &str| {
+        report
+            .outputs
+            .get(kind)
+            .and_then(Value::as_str)
+            .map(|s| mv(Path::new(s)))
+            .transpose()
     };
     let report_path = dir.join("report.json");
+    let previous: Option<Report> = std::fs::read(&report_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
     let staged = staging.join("report.json");
     write_report(report, &staged)?;
+    let parts_dir = dir.join("parts");
+    let new_files: std::collections::BTreeSet<_> = report.parts.iter().flat_map(assembly::files).collect();
+    if !new_files.is_empty() {
+        std::fs::create_dir_all(&parts_dir).map_err(|e| io_err(&parts_dir, e))?;
+        for file in &new_files {
+            mv(file)?;
+        }
+    }
+    let stl = mv_output("stl")?.expect("report STL path");
+    let step = mv_output("step")?;
+    let assembly = mv_output("assembly")?;
+    let bom = mv_output("bom")?;
+    if let Some(previous) = previous {
+        // Only remove stale generated files named in a prior report.
+        for name in previous.parts.iter().flat_map(assembly::files).filter(|file| {
+            file.parent() == Some(Path::new("parts"))
+                && file.extension().is_some_and(|ext| ext == "stl" || ext == "step")
+                && !new_files.contains(file)
+        }) {
+            remove_stale(&dir.join(name))?;
+        }
+        if !previous.parts.is_empty() && report.parts.is_empty() {
+            remove_stale(&dir.join("assembly.json"))?;
+            remove_stale(&dir.join("bom.csv"))?;
+            let _ = std::fs::remove_dir(&parts_dir);
+        }
+    }
     std::fs::rename(&staged, &report_path).map_err(|e| io_err(&report_path, e))?;
     Ok(Written {
         stl,
         step,
         report: report_path,
+        assembly,
+        bom,
     })
+}
+
+fn remove_stale(path: &Path) -> Result<(), CadError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io_err(path, e)),
+    }
 }
 
 fn write_report(report: &Report, path: &Path) -> Result<(), CadError> {

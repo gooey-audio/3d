@@ -1,0 +1,59 @@
+#!/bin/sh
+# Install the CLI, its sibling worker, and the shared project skills.
+set -eu
+engine=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
+prefix=${PREFIX:-"$HOME/.local/bin"}
+build=1
+skills_only=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --prefix)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "install: --prefix needs a directory" >&2; exit 2; }
+      prefix=$2
+      shift
+      ;;
+    --skills-only) skills_only=1 ;;
+    --no-build) build=0 ;;
+    -h|--help) echo "Usage: scripts/install [--prefix BIN_DIR] [--no-build] [--skills-only]"; exit 0 ;;
+    *) echo "install: unknown option $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+for dest in "$HOME/.agents/skills" "$HOME/.claude/skills"; do
+  for skill in "$engine"/skill/*; do
+    [ -f "$skill/SKILL.md" ] || continue
+    link=$dest/${skill##*/}
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+      echo "install: $link already exists and is not a symlink" >&2
+      exit 1
+    fi
+  done
+done
+
+if [ "$skills_only" = 0 ]; then
+  # Respect a caller's CARGO_TARGET_DIR, including a path relative to engine.
+  target=${CARGO_TARGET_DIR:-target}
+  case "$target" in /*) ;; *) target=$engine/$target ;; esac
+  if [ "$build" = 1 ]; then
+    (cd "$engine" && cargo build --release -p gooey-3d && ./cad-worker/build.sh)
+  fi
+  cli=$target/release/gooey-3d
+  worker=$engine/cad-worker/dist/gooey-cad-worker
+  for binary in "$cli" "$worker"; do
+    [ -x "$binary" ] || { echo "install: missing $binary (run without --no-build)" >&2; exit 1; }
+  done
+  mkdir -p "$prefix"
+  install -m 755 "$cli" "$worker" "$prefix/"
+  printf 'Installed gooey-3d and gooey-cad-worker in %s\n' "$prefix"
+fi
+
+for dest in "$HOME/.agents/skills" "$HOME/.claude/skills"; do
+  mkdir -p "$dest"
+  for skill in "$engine"/skill/*; do
+    [ -f "$skill/SKILL.md" ] || continue
+    ln -sfn "$skill" "$dest/${skill##*/}"
+  done
+  printf 'Linked skills in %s\n' "$dest"
+done

@@ -399,3 +399,109 @@ fn traps_kill_the_worker_and_protocol_mismatches_are_refused() {
     assert_eq!(e.kind, ErrorKind::Timeout, "{e}");
     assert!(t.elapsed() < Duration::from_secs(3));
 }
+
+#[test]
+fn cabinet_builds_and_exports_a_named_assembly() {
+    let Some((opts, _guard)) = setup() else { return };
+    let out = tmp();
+    let cabinet = repo().join("fixtures/cad/cabinet/cabinet.js");
+    let (r, files) = build(&cabinet, &opts, Some(out.path())).unwrap();
+    assert_eq!((r.parts.len(), r.pieces, r.genus), (9, 9, 0));
+    assert!(r.interferences.is_empty());
+    assert!(r.parts.iter().all(|p| p.valid && p.closed && p.pieces == 1));
+    let shelf = r.parts.iter().find(|p| p.name == "shelf-low").unwrap();
+    assert_eq!(shelf.cut_size, [22.375, 12.5, 0.75]);
+    let files = files.unwrap();
+    let step = std::fs::read_to_string(files.step.unwrap()).unwrap();
+    assert!(
+        step.contains("PRODUCT('shelf-low','shelf-low'"),
+        "STEP must preserve part names"
+    );
+    let bom = std::fs::read_to_string(files.bom.unwrap()).unwrap();
+    assert!(bom.contains("Adjustable shelf,2,wood/oak,22.375,12.5,0.75"), "{bom}");
+    let manifest: Value = serde_json::from_slice(&std::fs::read(files.assembly.unwrap()).unwrap()).unwrap();
+    assert_eq!(manifest["instances"].as_array().unwrap().len(), 9);
+    assert_eq!(manifest["materials"][0]["finish"], "wood/oak");
+    assert!(
+        r.parts
+            .iter()
+            .all(|p| out.path().join(&p.mesh).is_file() && out.path().join(p.step.as_ref().unwrap()).is_file())
+    );
+    assert_eq!(r.triangles, r.parts.iter().map(|part| part.triangles).sum::<usize>());
+}
+
+#[test]
+fn assembly_overlaps_can_be_reported_or_rejected() {
+    let Some((mut opts, _guard)) = setup() else { return };
+    opts.step = false;
+    let script = script("assembly-overlap.js");
+    let out = tmp();
+    let error = build(&script, &opts, Some(out.path())).unwrap_err();
+    assert_eq!((error.kind, error.exit_code()), (ErrorKind::Interference, 2));
+    assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+    opts.allow_interference = true;
+    let (r, files) = build(&script, &opts, Some(out.path())).unwrap();
+    assert_eq!(r.interferences.len(), 1);
+    assert_eq!(r.interferences[0].parts, ["a", "b"]);
+    assert_eq!(r.interferences[0].volume_mm3, 500.0);
+    assert!(r.parts.iter().all(|p| p.step.is_none()));
+    assert!(
+        std::fs::read_to_string(files.unwrap().bom.unwrap())
+            .unwrap()
+            .contains("a + b,3,#bb8877")
+    );
+    opts.allow_interference = false;
+    set(&mut opts, "offset", "10");
+    assert!(build(&script, &opts, None).unwrap().0.interferences.is_empty());
+}
+
+#[test]
+fn import_graph_errors_use_the_original_module_path() {
+    let Some((opts, _guard)) = setup() else { return };
+    let dir = tmp();
+    let entry = dir.path().join("assemblies");
+    let lib = dir.path().join("lib");
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    let root = entry.join("entry.js");
+    let source = lib.join("shelf.js");
+    std::fs::write(
+        &root,
+        r#"import { shelf } from "../lib/bridge.js";
+export function main() { return shelf(); }"#,
+    )
+    .unwrap();
+    std::fs::write(lib.join("bridge.js"), r#"export { shelf } from "./shelf.js";"#).unwrap();
+    std::fs::write(
+        &source,
+        r#"import {
+  panel
+} from "gooey-3d";
+export function shelf() {
+  throw new Error("shelf failed");
+}"#,
+    )
+    .unwrap();
+    let e = build(&root, &opts, None).unwrap_err();
+    assert_eq!((e.kind, e.line), (ErrorKind::Script, Some(5)), "{e}");
+    assert_eq!(e.file.as_deref().map(Path::new), Some(source.as_path()));
+}
+
+#[test]
+fn assembly_rejects_duplicate_names() {
+    let Some((opts, _guard)) = setup() else { return };
+    let dir = tmp();
+    let script = dir.path().join("duplicate.js");
+    std::fs::write(
+        &script,
+        r#"import { assembly, panel, part } from "gooey-3d";
+export function main() {
+  const shape = panel(1, 1, 1);
+  return assembly([part("same", shape), part("same", shape)]);
+}"#,
+    )
+    .unwrap();
+    let e = build(&script, &opts, None).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Script);
+    assert!(e.message.contains("duplicate part name"));
+}

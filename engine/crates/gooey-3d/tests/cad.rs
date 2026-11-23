@@ -273,3 +273,37 @@ fn serve_answers_in_order_and_survives_a_timeout() {
     drop(stdin);
     assert!(child.wait().unwrap().success(), "EOF on stdin exits 0");
 }
+
+#[test]
+fn assembly_cli_reports_interference_and_publishes_outputs_when_allowed() {
+    let Some(cli) = setup() else { return };
+    let src = script("assembly-overlap.js");
+    let out = out_dir("assembly");
+    let run = |allow| {
+        let mut args = vec!["build", &src, "--out", out.to_str().unwrap(), "--json"];
+        if allow {
+            args.push("--allow-interference");
+        }
+        cli.run(&args)
+    };
+    let rejected = run(false);
+    assert_eq!(code(&rejected), 2);
+    assert_eq!(stdout_json(&rejected)["error"]["kind"], "interference");
+    assert!(!out.exists());
+    let built = run(true);
+    assert_eq!(code(&built), 0, "{:?}", built);
+    let built = stdout_json(&built);
+    assert_eq!(built["report"]["interferences"][0]["volume_mm3"], 500.0);
+    for name in ["assembly", "bom"] {
+        assert!(Path::new(built["outputs"][name].as_str().unwrap()).is_file());
+    }
+    assert!(out.join("parts/a.step").is_file());
+    assert!(out.join("parts/b.stl").is_file());
+}
+
+#[test]
+fn render_flag_is_only_valid_for_build() {
+    let out = gooey(&["check", "not-read.js", "--render"], "not-used");
+    assert_eq!(code(&out), 2);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown option --render"));
+}

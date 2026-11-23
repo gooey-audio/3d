@@ -25,6 +25,9 @@
 // The host owns timeouts: a kernel operation can loop forever inside WASM and
 // no in-process timer can interrupt it. After a WASM trap the module state is
 // undefined, so the worker answers and then exits with code 3.
+import { mkdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { makeGooey, type Part } from "./gooey.ts";
 import { createInterface } from "node:readline";
 import { loadRuntime } from "./runtime.ts";
 import {
@@ -42,7 +45,7 @@ import {
   type Prepared,
   type Params,
 } from "./script.ts";
-import { toShape, writeMesh, writeStep, countFaces, adaptiveTolerance, DEFAULT_LIMITS, type Limits } from "./output.ts";
+import { assemblyParts, combineMeshes, toShape, writeMesh, writeStep, countFaces, adaptiveTolerance, DEFAULT_LIMITS, type Limits, type FaceGroup } from "./output.ts";
 import pkg from "../package.json" with { type: "json" };
 
 /** Bumped on any incompatible change to the request/response shapes. */
@@ -95,8 +98,10 @@ async function handle(req: Request): Promise<{ ok: boolean; [k: string]: any }> 
     const fallback = req.units == null ? DEFAULT_UNITS : parseUnits(req.units);
     if (!fallback) throw new ScriptError(`units must be "in", "cm" or "mm", got ${JSON.stringify(req.units)}`, "protocol");
     prepared = prepareScript(req.script);
-    const { module } = await importScript(prepared, rt.replicad);
+    const gooey = makeGooey(rt.replicad, prepared.declaredUnits ?? fallback);
+    const { module } = await importScript(prepared, rt.replicad, gooey);
     const units = scriptUnits(module, fallback);
+    gooey.units = units;
     if (req.op === "params") {
       return { ok: true, defaultParams: module.defaultParams ?? {}, paramRanges: paramRanges(module), units };
     }
@@ -104,7 +109,10 @@ async function handle(req: Request): Promise<{ ok: boolean; [k: string]: any }> 
     const params = mergeParams(module, req.params, req.allowOutOfRange);
     const expect = resolveExpect(module, params);
     const t1 = performance.now();
-    let shape = toShape(rt.replicad, await module.main(rt.replicad, { ...params }));
+    const result = await module.main(rt.replicad, { ...params });
+    const parts = assemblyParts(result);
+    if (parts) return await buildAssembly(req, parts, result, { params, units, expect }, limits, t0, t1);
+    let shape = toShape(rt.replicad, result);
     // Everything downstream (mesh, STEP, bounds, faces, tolerances) is in mm.
     const mmPerUnit = MM_PER_UNIT[units];
     if (mmPerUnit !== 1) shape = shape.scale(mmPerUnit, [0, 0, 0]);
@@ -152,6 +160,85 @@ async function handle(req: Request): Promise<{ ok: boolean; [k: string]: any }> 
     }
   } catch (err) {
     return { ok: false, error: describeError(err, rt.oc, prepared) };
+  } finally {
+    if (prepared) rmSync(prepared.dir, { recursive: true, force: true });
+  }
+}
+
+async function buildAssembly(
+  req: Request, parts: Part[], result: unknown,
+  script: { params: Params; units: keyof typeof MM_PER_UNIT; expect: ReturnType<typeof resolveExpect> },
+  limits: Limits, t0: number, t1: number,
+) {
+  const mmPerUnit = MM_PER_UNIT[script.units];
+  const shapes = new Set<{ delete(): void }>(parts.map((p) => p.shape));
+  try {
+    const named = parts.map(({ shape, ...part }) => {
+      const scaled = mmPerUnit === 1 ? shape : shape.clone().scale(mmPerUnit, [0, 0, 0]);
+      shapes.add(scaled);
+      return { ...part, shape: scaled };
+    });
+    const compound = rt.replicad.makeCompound(named.map((p) => p.shape.clone()));
+    shapes.add(compound);
+    const t2 = performance.now();
+    let faceCount = 0;
+    const checks = named.map(({ name, shape }) => {
+      const count = countFaces(rt.oc, shape, limits.faces - faceCount);
+      faceCount += count;
+      if (faceCount > limits.faces) throw new ScriptError(`the assembly has more than ${limits.faces} B-rep faces`, "limits");
+      return { name, faceCount: count, valid: isValidSolid(rt.oc, shape) };
+    });
+    const tolerance = { linear: req.tolerance ?? adaptiveTolerance(compound).tolerance, angular: req.angularTolerance ?? 0.1 };
+    const t3 = performance.now();
+    const meshDir = req.outputs?.mesh && join(dirname(req.outputs.mesh), "parts");
+    const stepDir = req.outputs?.step && join(dirname(req.outputs.step), "parts");
+    for (const dir of new Set([meshDir, stepDir])) if (dir) mkdirSync(dir, { recursive: true });
+    const faces: FaceGroup[] = [];
+    const meshPaths: string[] = [];
+    const bounds = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+    let triangles = 0;
+    let faceOffset = 0;
+    const outputs = named.map(({ shape, ...part }, i) => {
+      const check = checks[i];
+      const { explode } = part;
+      const entry = { ...part, explode: explode?.map((x) => x * mmPerUnit), ...check };
+      if (!meshDir || !check.valid) return entry;
+      const mesh = join(meshDir, `${part.name}.stl`);
+      const m = writeMesh(shape, mesh, tolerance.linear, tolerance.angular, limits.triangles - triangles);
+      for (const face of m.faces) {
+        faces.push({ ...face, face: face.face < 0 ? face.face : face.face + faceOffset, start: face.start + triangles });
+      }
+      faceOffset += check.faceCount;
+      triangles += m.triangles;
+      for (let k = 0; k < 3; k++) {
+        bounds.min[k] = Math.min(bounds.min[k], m.bounds.min[k]);
+        bounds.max[k] = Math.max(bounds.max[k], m.bounds.max[k]);
+      }
+      meshPaths.push(mesh);
+      return { ...entry, mesh, triangles: m.triangles, bounds: m.bounds };
+    });
+    const valid = checks.every((p) => p.valid);
+    if (valid && req.outputs?.mesh) combineMeshes(meshPaths, triangles, req.outputs.mesh);
+    const t4 = performance.now();
+    if (valid && stepDir && req.outputs?.step) {
+      for (const [i, p] of named.entries()) {
+        const step = join(stepDir, `${p.name}.step`);
+        await writeStep(p.shape, step);
+        Object.assign(outputs[i], { step });
+      }
+      await writeStep(compound, req.outputs.step, named.map(({ name, shape }) => ({ name, shape })), rt.replicad);
+    }
+    const ms = {
+      load: round1(t1 - t0), eval: round1(t2 - t1), check: round1(t3 - t2), mesh: round1(t4 - t3),
+      ...(stepDir ? { step: round1(performance.now() - t4) } : {}), total: round1(performance.now() - t0),
+    };
+    return {
+      ok: true, ...script, mmPerUnit, valid, faceCount, tolerance, faces, triangles, bounds,
+      mesh: req.outputs?.mesh, step: req.outputs?.step, parts: outputs,
+      assemblyName: (result as { name?: string }).name, ms,
+    };
+  } finally {
+    for (const shape of shapes) shape.delete();
   }
 }
 

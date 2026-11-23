@@ -5,6 +5,7 @@
 //! placement rules match the three.js viewer the format came from: Euler XYZ degrees or a
 //! column-major `matrix`, then the manifest `up` axis turned to world +Y.
 
+use crate::scene::MaterialOverride;
 use glam::{DMat3, DMat4, DVec3};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -29,7 +30,8 @@ pub struct ManifestMaterial {
     pub id: String,
     /// Finish library entry name, when the manifest declares one.
     pub finish: Option<String>,
-    pub color: String,
+    pub color: Option<String>,
+    pub look: Option<MaterialOverride>,
     pub roughness: Option<f64>,
     pub metalness: Option<f64>,
     pub opacity: Option<f64>,
@@ -135,10 +137,24 @@ pub fn load_value(config: &Value, path: &Path, sel: &Selection) -> Result<Assemb
         .ok_or("manifest has no materials")?
         .iter()
         .map(|m| {
+            let id = str_of(m, "id", "material")?.to_owned();
+            let finish = m.get("finish").and_then(Value::as_str).map(str::to_owned);
+            let color = if finish.is_some() && m.get("color").is_none() {
+                None
+            } else {
+                Some(str_of(m, "color", "material")?.to_owned())
+            };
+            let look = m
+                .get("look")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| format!("material {id} look: {e}"))?;
             Ok(ManifestMaterial {
-                id: str_of(m, "id", "material")?.to_owned(),
-                finish: m.get("finish").and_then(Value::as_str).map(str::to_owned),
-                color: str_of(m, "color", "material")?.to_owned(),
+                id,
+                finish,
+                color,
+                look,
                 roughness: m.get("roughness").and_then(Value::as_f64),
                 metalness: m.get("metalness").and_then(Value::as_f64),
                 opacity: m.get("opacity").and_then(Value::as_f64),

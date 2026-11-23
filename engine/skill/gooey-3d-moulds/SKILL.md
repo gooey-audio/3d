@@ -1,5 +1,5 @@
 ---
-name: cast-moulds
+name: gooey-3d-moulds
 description: Choose, design, check and print moulds for casting concrete, resin or plaster parts (plinths, slabs, feet, waveguides). Picks wood forms, PLA split moulds, TPU cups or PLA master + silicone by shape; builds printed moulds with the gooey-3d CLI (gooey-audio/3d, `gooey-3d mould`); enforces printability with `gooey-3d mould check`; covers Bambu A1 PLA and TPU printing. Use for any cast part, mould STL or mould print failure.
 ---
 
