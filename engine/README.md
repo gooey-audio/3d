@@ -376,6 +376,13 @@ A manifest lists `materials` (`id`, `color`, optional `finish`, `roughness`,
 [`fixtures/render/assembly.json`](fixtures/render/assembly.json).
 `gooey-3d render scene assembly.json --out a.png` renders one with the default scene.
 
+A material may add a procedural paint `splatter`: `seed` (integer), `colors` (main
+and optional accent hex), `accent` (share of impacts in the accent colour, default 0),
+`cell_mm` (impact spacing, default 90), `density` (chance a cell holds an impact,
+default 0.6) and `normal` (signed local axis of the painted faces, default `[0, 0, 1]`).
+Paint goes on the faces whose local normal runs along `normal`, in their other two
+local axes. It is a finish, not geometry: model the panel, splatter it in the manifest.
+
 ### Scene files (`gooey-render/v1`)
 
 ```json

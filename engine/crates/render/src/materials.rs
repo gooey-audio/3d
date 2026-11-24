@@ -224,13 +224,15 @@ impl Library {
     }
 
     /// Resolve finish `name` as material `id`. `color`/`grain` replace the library's (a
-    /// manifest's copy or a project recolour); `scene` overrides win over everything.
+    /// manifest's copy or a project recolour), `splatter` paints over it; `scene` overrides
+    /// win over everything.
     pub fn material(
         &self,
         id: &str,
         name: &str,
         color: Option<&str>,
         grain: Option<&Value>,
+        splatter: Option<&Value>,
         scene: Option<&MaterialOverride>,
     ) -> Result<Material, String> {
         let e = self.get(name)?;
@@ -243,6 +245,7 @@ impl Library {
             metalness: e.metalness,
             opacity: e.opacity,
             grain: grain.or(e.grain.as_ref()).cloned(),
+            splatter: splatter.cloned(),
         };
         let mut o = e.render.clone();
         if let Some(s) = scene {
@@ -262,17 +265,17 @@ mod tests {
         let lib = Library::load(&path).unwrap();
         assert!(lib.entries.len() > 20);
         for (name, e) in &lib.entries {
-            let m = lib.material("t", name, None, None, None).unwrap();
+            let m = lib.material("t", name, None, None, None, None).unwrap();
             assert_eq!(m.finish.as_deref(), Some(name.as_str()));
             if let Some(t) = e.render.texture {
                 assert!(t.gpu()[0] >= 1.0 && t.scale_mm > 0.0, "{name}");
             }
         }
         // Render values beat the viewer approximation; a recolour keeps the finish.
-        let resin = lib.material("r", "resin/epoxy-amber", None, None, None).unwrap();
+        let resin = lib.material("r", "resin/epoxy-amber", None, None, None, None).unwrap();
         assert_eq!((resin.opacity, resin.transmission), (1.0, 0.35));
         let paint = lib
-            .material("p", "paint/mdf-satin", Some("#ff0000"), None, None)
+            .material("p", "paint/mdf-satin", Some("#ff0000"), None, None, None)
             .unwrap();
         assert!(paint.color[0] > 0.9 && paint.clearcoat > 0.2);
         let err = Library::default().get("wood/oak").unwrap_err();
