@@ -309,6 +309,7 @@ fn linear_hex(c: &str) -> Result<[f32; 3], String> {
 
 pub fn resolve_material(m: &manifest::ManifestMaterial, o: Option<&MaterialOverride>) -> Result<Material, String> {
     let o = o.cloned().unwrap_or_default();
+    let base_color = m.color.as_deref().ok_or("material needs a color")?;
     let unit = |name: &str, v: f64| {
         if (0.0..=1.0).contains(&v) {
             Ok(v as f32)
@@ -319,7 +320,7 @@ pub fn resolve_material(m: &manifest::ManifestMaterial, o: Option<&MaterialOverr
     let grain = match &m.grain {
         Some(g) => {
             let gc = g.get("color").and_then(Value::as_str).ok_or("grain needs a color")?;
-            let edge = g.get("edge_color").and_then(Value::as_str).unwrap_or(&m.color);
+            let edge = g.get("edge_color").and_then(Value::as_str).unwrap_or(base_color);
             Some(Grain {
                 color: linear_hex(gc)?,
                 edge_color: linear_hex(edge)?,
@@ -350,7 +351,7 @@ pub fn resolve_material(m: &manifest::ManifestMaterial, o: Option<&MaterialOverr
     Ok(Material {
         id: m.id.clone(),
         finish: m.finish.clone(),
-        color: linear_hex(o.color.as_deref().unwrap_or(&m.color))?,
+        color: linear_hex(o.color.as_deref().unwrap_or(base_color))?,
         // Same fallbacks as three.js MeshStandardMaterial.
         roughness: unit("roughness", o.roughness.or(m.roughness).unwrap_or(0.75))?,
         metalness: unit("metalness", o.metalness.or(m.metalness).unwrap_or(0.0))?,
@@ -440,12 +441,22 @@ pub fn resolve_assembly(
     let mut materials = assembly
         .materials
         .iter()
-        .map(|m| match &m.finish {
-            // Library finish: manifest colour and grain, library light response.
-            Some(f) => library
-                .material(&m.id, f, Some(&m.color), m.grain.as_ref(), file.materials.get(&m.id))
-                .map_err(|e| format!("material {}: {e}", m.id)),
-            None => resolve_material(m, file.materials.get(&m.id)),
+        .map(|m| {
+            let scene_look = file.materials.get(&m.id);
+            let combined;
+            let look = match (&m.look, scene_look) {
+                (Some(base), Some(overrides)) => {
+                    combined = base.merged(overrides);
+                    Some(&combined)
+                }
+                (base, scene) => scene.or(base.as_ref()),
+            };
+            match &m.finish {
+                Some(f) => library
+                    .material(&m.id, f, m.color.as_deref(), m.grain.as_ref(), look)
+                    .map_err(|e| format!("material {}: {e}", m.id)),
+                None => resolve_material(m, look),
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
     if let Environment::Room(room) = &file.environment {

@@ -9,18 +9,28 @@ pub struct Flags {
 
 /// `with_value` lists the flags that take a value as the next argument.
 pub fn parse(args: &[String], with_value: &[&str]) -> Result<Flags, String> {
+    parse_optional(args, with_value, &[])
+}
+
+pub fn parse_optional(args: &[String], with_value: &[&str], optional: &[(&str, &str)]) -> Result<Flags, String> {
     let mut f = Flags {
         positional: vec![],
         switches: vec![],
         values: vec![],
     };
-    let mut it = args.iter();
+    let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         if let Some((k, v)) = a.split_once('=').filter(|_| a.starts_with("--")) {
             f.values.push((k.to_string(), v.to_string()));
         } else if with_value.contains(&a.as_str()) {
             let v = it.next().ok_or(format!("{a} needs a value"))?;
             f.values.push((a.clone(), v.clone()));
+        } else if let Some((_, suffix)) = optional.iter().find(|(flag, _)| *flag == a)
+            && it
+                .peek()
+                .is_some_and(|v| !v.starts_with("--") && v.to_ascii_lowercase().ends_with(suffix))
+        {
+            f.values.push((a.clone(), it.next().unwrap().clone()));
         } else if a.starts_with("--") {
             f.switches.push(a.clone());
         } else {

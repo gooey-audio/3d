@@ -7,10 +7,12 @@
 
 use std::io::{BufRead, Write};
 use std::path::Path;
+#[cfg(feature = "render")]
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::flags::{Flags, parse};
+use crate::flags::{Flags, parse, parse_optional};
 use gooey_cad::{CadError, ErrorKind, Material, Options, Report, Units, Worker, WorkerCommand, Written};
 use serde_json::{Map, Value, json};
 
@@ -21,7 +23,7 @@ usage:
   gooey-3d cad build PART.js --out DIR [--set NAME=VALUE ...] [options]
       Evaluate a Replicad part script, validate the solid, and write DIR/PART.stl,
       DIR/PART.step and DIR/report.json. Files are staged and renamed into place
-      only when everything passes.
+      only when everything passes. Assemblies also write parts/, assembly.json and bom.csv.
   gooey-3d cad check PART.js [--set NAME=VALUE ...] [options]
       Build and validate; keep no files.
   gooey-3d cad params PART.js [--units in|cm|mm]
@@ -40,6 +42,9 @@ options:
   --set NAME=VALUE        override a defaultParams entry (repeatable)
   --units in|cm|mm        units of a script without `export const units` (default $GOOEY_UNITS, else in)
   --allow-out-of-range    accept values outside the script's paramRanges
+  --allow-interference    report overlaps above 1 mm³ without failing
+  --render [PNG]          render after build (default DIR/PART.png)
+  --library FILE          finish library for --render
   --timeout S             wall-clock limit for the build (default 30); the worker is killed
   --tolerance MM          mesh tolerance (default max(0.01, 2e-5 x bounding-box diagonal))
   --material pla|tpu      printability rules (default pla)
@@ -53,21 +58,22 @@ serve protocol (one JSON object per line):
   first line out: {\"ready\":true, \"protocol\", \"versions\", \"startup_seconds\"} (or \"error\"
       when the worker could not start; it is retried on the next request)
   {\"id\", \"op\":\"build\", \"script\":PATH, \"params\":{...}, \"units\", \"out\":DIR|null, \"step\":true,
-   \"allow_out_of_range\":false, \"timeout\":S, \"tolerance\":MM, \"material\", \"bed\"}
+   \"allow_out_of_range\":false, \"allow_interference\":false, \"timeout\":S, \"tolerance\":MM, \"material\", \"bed\"}
       -> {\"id\", \"ok\":true, \"outputs\":{\"stl\",\"step\",\"report\"}|null, \"report\":{...}}
          as `cad build --json` (no \"out\": validate only, like `cad check`)
   {\"id\", \"op\":\"params\", \"script\":PATH, \"units\", \"timeout\":S}
       -> {\"id\", \"ok\":true, \"defaultParams\":{...}, \"paramRanges\":{...}, \"units\"}
-  errors: {\"id\", \"ok\":false, \"error\":{kind, message, line, column}}
+  errors: {\"id\", \"ok\":false, \"error\":{kind, message, file, line, column}}
   Only op and script are required. The worker is replaced after a timeout, trap or
   crash, and after --max-jobs jobs (default 300) or --max-heap-mb of OpenCascade heap
   (default 2048). --timeout is the default per-request limit (30 s). EOF on stdin exits 0.
 
-Exit status: 0 ok; 2 script, syntax, params, kernel, limits, invalid or expect error
+Exit status: 0 ok; 2 script, syntax, params, kernel, limits, invalid, interference or expect error
 (or bad usage); 3 timeout; 4 worker missing, crashed or trapped.";
 
 const BUILD_VALUES: &[&str] = &[
     "--out",
+    "--library",
     "--set",
     "--units",
     "--timeout",
@@ -75,7 +81,7 @@ const BUILD_VALUES: &[&str] = &[
     "--material",
     "--bed",
 ];
-const BUILD_SWITCHES: &[&str] = &["--json", "--allow-out-of-range"];
+const BUILD_SWITCHES: &[&str] = &["--json", "--allow-out-of-range", "--allow-interference"];
 
 pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let rest = args.get(1..).unwrap_or(&[]);
@@ -139,6 +145,7 @@ fn options(f: &Flags) -> Result<Options, String> {
         o.material = m.parse::<Material>()?;
     }
     o.allow_out_of_range = f.has("--allow-out-of-range");
+    o.allow_interference = f.has("--allow-interference");
     Ok(o)
 }
 
@@ -157,13 +164,26 @@ fn print_json(v: &Value) {
 
 fn build_cmd(args: &[String], write: bool) -> Result<ExitCode, String> {
     let cmd = if write { "build" } else { "check" };
-    let f = parse(args, BUILD_VALUES)?;
-    let values: Vec<&str> = BUILD_VALUES
+    let f = parse_optional(args, BUILD_VALUES, &[("--render", ".png")])?;
+    let mut values: Vec<_> = BUILD_VALUES
         .iter()
         .copied()
-        .filter(|v| write || *v != "--out")
+        .filter(|v| write || !matches!(*v, "--out" | "--library"))
         .collect();
-    f.reject_unknown(BUILD_SWITCHES, &values)?;
+    let mut switches = BUILD_SWITCHES.to_vec();
+    if write {
+        values.push("--render");
+        switches.push("--render");
+    }
+    f.reject_unknown(&switches, &values)?;
+    let render = f.has("--render") || f.value("--render").is_some();
+    if f.value("--library").is_some() && !render {
+        return Err("--library requires --render".into());
+    }
+    #[cfg(not(feature = "render"))]
+    if render {
+        return Err("--render requires the render feature".into());
+    }
     let script = one_script(&f, cmd)?;
     let out = match (write, f.value("--out")) {
         (true, Some(o)) => Some(Path::new(o)),
@@ -176,25 +196,79 @@ fn build_cmd(args: &[String], write: bool) -> Result<ExitCode, String> {
         Ok(r) => r,
         Err(e) => return Ok(fail(&e, json)),
     };
+    #[cfg(feature = "render")]
+    let png = if render {
+        let w = written.as_ref().expect("render requires a build output");
+        match render_build(w, f.value("--render"), f.value("--library"), json) {
+            Ok(png) => Some(png),
+            Err(e) => {
+                eprintln!("gooey-3d: cad: render: {e}");
+                if json {
+                    print_json(&json!({"ok": false, "error": {"kind": "render", "message": e},
+                        "outputs": outputs_json(w), "report": report}));
+                }
+                return Ok(ExitCode::from(2));
+            }
+        }
+    } else {
+        None
+    };
     if json {
-        let outputs = written.as_ref().map(|w| {
-            json!({
-                "stl": w.stl,
-                "step": w.step,
-                "report": w.report,
-            })
-        });
+        let outputs = written.as_ref().map(outputs_json);
+        #[cfg(feature = "render")]
+        let outputs = {
+            let mut outputs = outputs;
+            if let (Some(outputs), Some(png)) = (&mut outputs, &png) {
+                outputs["png"] = json!(png);
+            }
+            outputs
+        };
         print_json(&json!({ "ok": true, "outputs": outputs, "report": report }));
     } else {
         summary(&report);
         if let Some(w) = &written {
             let mut files = vec![w.stl.display().to_string()];
             files.extend(w.step.as_ref().map(|p| p.display().to_string()));
+            files.extend(w.assembly.as_ref().map(|p| p.display().to_string()));
+            files.extend(w.bom.as_ref().map(|p| p.display().to_string()));
             files.push(w.report.display().to_string());
+            #[cfg(feature = "render")]
+            files.extend(png.as_ref().map(|p| p.display().to_string()));
             println!("wrote {}", files.join(", "));
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(feature = "render")]
+fn render_build(w: &Written, png: Option<&str>, library: Option<&str>, quiet: bool) -> Result<PathBuf, String> {
+    let (mode, source) = w.assembly.as_ref().map_or(("stl", &w.stl), |p| ("scene", p));
+    let png = png.map_or_else(|| w.stl.with_extension("png"), PathBuf::from);
+    let mut args = vec![
+        mode.into(),
+        source.to_string_lossy().into_owned(),
+        "--out".into(),
+        png.to_string_lossy().into_owned(),
+        "--view".into(),
+        "iso".into(),
+        "--env".into(),
+        "studio".into(),
+        "--width".into(),
+        "800".into(),
+        "--spp".into(),
+        "64".into(),
+    ];
+    if let Some(library) = library {
+        args.extend(["--library".into(), library.into()]);
+    }
+    if quiet {
+        args.push("--quiet".into());
+    }
+    let code = crate::render::run(&args)?;
+    if code != ExitCode::SUCCESS {
+        return Err("renderer returned a failure status".into());
+    }
+    Ok(png)
 }
 
 fn summary(r: &Report) {
@@ -216,6 +290,27 @@ fn summary(r: &Report) {
         r.triangles,
         r.brep_faces,
     );
+    if !r.parts.is_empty() {
+        println!(
+            "  {:<20} {:>5}  {:>25}  material",
+            "part",
+            "qty",
+            format!("cut size ({})", r.units)
+        );
+        for p in &r.parts {
+            let [l, w, t] = p.cut_size;
+            let dims = format!("{l:.d$} x {w:.d$} x {t:.d$}");
+            let material = p
+                .material
+                .as_ref()
+                .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string()))
+                .unwrap_or_default();
+            println!("  {:<20} {:>5}  {:>25}  {material}", p.name, p.qty, dims);
+        }
+        for i in &r.interferences {
+            println!("  overlap {} / {}: {:.3} mm³", i.parts[0], i.parts[1], i.volume_mm3);
+        }
+    }
     let p = &r.printability;
     if p.ok {
         println!("printability ({}): ok", p.material.name());
@@ -338,6 +433,7 @@ impl Serve {
         }
         o.step = flag(req, "step", true)?;
         o.allow_out_of_range = flag(req, "allow_out_of_range", false)?;
+        o.allow_interference = flag(req, "allow_interference", false)?;
         if let Some(t) = positive(req, "timeout")? {
             o.timeout = Duration::from_secs_f64(t);
         }
@@ -411,7 +507,12 @@ fn positive(req: &Map<String, Value>, k: &str) -> Result<Option<f64>, CadError> 
 }
 
 fn outputs_json(w: &Written) -> Value {
-    json!({ "stl": w.stl, "step": w.step, "report": w.report })
+    let mut outputs = json!({ "stl": w.stl, "step": w.step, "report": w.report });
+    if let Some(assembly) = &w.assembly {
+        outputs["assembly"] = json!(assembly);
+        outputs["bom"] = json!(w.bom);
+    }
+    outputs
 }
 
 fn serve_error(id: Value, e: &CadError) -> Value {

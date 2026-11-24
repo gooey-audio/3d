@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{App, AppError, sha256_hex};
 
-const CAD_SKILL: &str = include_str!("../../../engine/skill/cad/SKILL.md");
+const CAD_SKILL: &str = include_str!("../../../engine/skill/gooey-3d-cad/SKILL.md");
 const TEXTURE_SKILL: &str = include_str!("../../../engine/skill/textures/SKILL.md");
 const TEXTURE_KIT: &str = include_str!("../../../engine/skill/textures/kit.js");
 const KIT_START: &str = "// ---- gooey texture kit";

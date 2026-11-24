@@ -22,6 +22,10 @@ pub struct Validation {
 /// Validates a tessellated part. An open, non-finite or non-manifold mesh is an
 /// `invalid` error; the counts are returned for the caller's `expect` check.
 pub fn validate(stl: &[u8], material: Material, bed: f64) -> Result<Validation, CadError> {
+    validate_solid(stl, material, bed).map(|(report, _, _)| report)
+}
+
+pub(crate) fn validate_solid(stl: &[u8], material: Material, bed: f64) -> Result<(Validation, Solid, Mesh), CadError> {
     let raw = Mesh::from_stl(stl)
         .map_err(|e| CadError::new(ErrorKind::Protocol, format!("the worker wrote an unreadable STL: {e}")))?;
     let mesh = raw.weld_f32();
@@ -45,14 +49,18 @@ pub fn validate(stl: &[u8], material: Material, bed: f64) -> Result<Validation, 
     } else {
         solid.genus()
     };
-    Ok(Validation {
-        closed,
-        pieces,
-        genus,
-        volume_mm3: solid.volume(),
-        bounds: mesh.bounds(),
-        triangles: mesh.tris.len(),
-        near_duplicate_vertices: mesh.near_duplicate_pairs(DUP_TOL),
-        printability: castkit_core::check(&raw, material, bed),
-    })
+    Ok((
+        Validation {
+            closed,
+            pieces,
+            genus,
+            volume_mm3: solid.volume(),
+            bounds: mesh.bounds(),
+            triangles: mesh.tris.len(),
+            near_duplicate_vertices: mesh.near_duplicate_pairs(DUP_TOL),
+            printability: castkit_core::check(&raw, material, bed),
+        },
+        solid,
+        mesh,
+    ))
 }

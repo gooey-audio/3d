@@ -1,6 +1,7 @@
 // Turns the shape returned by `main` into a binary STL (+ per-face triangle
 // ranges) and a STEP file, with guards against runaway tessellation.
-import { writeFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import type { Part } from "./gooey.ts";
 import { ScriptError } from "./script.ts";
 
 // A B-rep face and the triangles that tessellate it. `face` is the index in
@@ -56,9 +57,41 @@ function unitNormal(face: any, center: any): number[] {
 export type Limits = { faces: number; triangles: number };
 export const DEFAULT_LIMITS: Limits = { faces: 2000, triangles: 2_000_000 };
 
+export function assemblyParts(result: unknown): Part[] | undefined {
+  if (!result || typeof result !== "object" || !("parts" in result)) return;
+  if (!Array.isArray(result.parts) || !result.parts.length) {
+    throw new ScriptError("an assembly must have a non-empty parts array");
+  }
+  if ("name" in result && result.name !== undefined && typeof result.name !== "string") {
+    throw new ScriptError("assembly name must be a string");
+  }
+  const names = new Set<string>();
+  for (const item of result.parts) {
+    const { name, shape, qty, material, group, explode, meta } = item ?? {};
+    if (typeof name !== "string" || !/^[a-z0-9_-]+$/i.test(name) || name.length > 120 ||
+        /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) {
+      throw new ScriptError(`part name must be file-safe, got ${JSON.stringify(name)}`);
+    }
+    if (names.has(name.toLowerCase())) throw new ScriptError(`duplicate part name: ${name}`);
+    names.add(name.toLowerCase());
+    if (!shape || typeof shape.mesh !== "function") throw new ScriptError(`part ${name} must have a Replicad shape`);
+    if (qty !== undefined && (!Number.isSafeInteger(qty) || qty < 1)) throw new ScriptError(`part ${name}: qty must be a positive integer`);
+    if (group !== undefined && (typeof group !== "string" || group.length === 0)) throw new ScriptError(`part ${name}: group must be a non-empty string`);
+    if (explode !== undefined && (!Array.isArray(explode) || explode.length !== 3 || !explode.every(Number.isFinite))) {
+      throw new ScriptError(`part ${name}: explode must be three finite coordinates`);
+    }
+    const object = (v: unknown) => !!v && typeof v === "object" && !Array.isArray(v);
+    if (material !== undefined && typeof material !== "string" && !object(material)) {
+      throw new ScriptError(`part ${name}: material must be a finish name, #rrggbb, or an object`);
+    }
+    if (meta !== undefined && !object(meta)) throw new ScriptError(`part ${name}: meta must be an object`);
+  }
+  return result.parts as Part[];
+}
+
 export function toShape(replicad: any, result: unknown): any {
-  const items = Array.isArray(result) ? result : [result];
-  const shapes = items.map((item: any) => (item && "shape" in item && !("wrapped" in item) ? item.shape : item));
+  const items = assemblyParts(result) ?? (Array.isArray(result) ? result : [result]);
+  const shapes = items.map((item: any) => (item && typeof item === "object" && "shape" in item && !("wrapped" in item) ? item.shape : item));
   if (shapes.length === 0) throw new ScriptError("`main` returned an empty array");
   for (const s of shapes) {
     if (!s || typeof s.mesh !== "function") {
@@ -158,7 +191,23 @@ export function writeMesh(shape: any, path: string, tolerance: number, angularTo
   return { triangles: nTri, bounds: { min, max }, faces };
 }
 
-export async function writeStep(shape: any, path: string) {
-  const blob: Blob = shape.blobSTEP();
+/** Concatenate the part facets so the combined STL preserves the original parts. */
+export function combineMeshes(paths: string[], triangles: number, output: string) {
+  const fd = openSync(output, "w");
+  try {
+    const header = Buffer.alloc(84);
+    header.write("gooey cad-worker assembly", 0, "ascii");
+    header.writeUInt32LE(triangles, 80);
+    writeFileSync(fd, header);
+    for (const path of paths) writeFileSync(fd, readFileSync(path).subarray(84));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export async function writeStep(shape: any, path: string, named?: { name: string; shape: any }[], replicad?: any) {
+  const blob: Blob = named && typeof replicad.exportSTEP === "function"
+    ? replicad.exportSTEP(named)
+    : shape.blobSTEP();
   writeFileSync(path, new Uint8Array(await blob.arrayBuffer()));
 }

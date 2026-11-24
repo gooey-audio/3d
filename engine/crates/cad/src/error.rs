@@ -21,6 +21,8 @@ pub enum ErrorKind {
     Invalid,
     /// The script's `expect` (pieces, genus) does not match the result.
     Expect,
+    /// Two assembly parts occupy the same space.
+    Interference,
     /// Reading the script or writing outputs failed.
     Io,
     /// The worker did not start or answer in time and was killed.
@@ -54,6 +56,7 @@ impl ErrorKind {
             ErrorKind::Limits => "limits",
             ErrorKind::Invalid => "invalid",
             ErrorKind::Expect => "expect",
+            ErrorKind::Interference => "interference",
             ErrorKind::Io => "io",
             ErrorKind::Timeout => "timeout",
             ErrorKind::Trap => "trap",
@@ -77,8 +80,8 @@ pub struct CadError {
     pub message: String,
     pub line: Option<u32>,
     pub column: Option<u32>,
-    /// The script, for display (`file:line:column: ...`); not serialized.
-    #[serde(skip)]
+    /// Source file when available, including imported modules.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     /// The JavaScript stack, when the worker sent one; not serialized.
     #[serde(skip)]
@@ -125,7 +128,7 @@ impl CadError {
                 .to_string(),
             line: num("line"),
             column: num("column"),
-            file: None,
+            file: v.get("file").and_then(Value::as_str).map(str::to_string),
             stack: v.get("stack").and_then(Value::as_str).map(str::to_string),
         }
     }

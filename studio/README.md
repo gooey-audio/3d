@@ -42,7 +42,7 @@ endpoint with tool calls works) and `DEEPSEEK_MAX_STEPS` (model calls per turn, 
 
 | Path | What |
 |---|---|
-| `<part>.js` | The part script: the source of truth. The engine's conventions apply (`main`, `defaultParams`, `paramRanges`, `expect`; see `engine/skill/cad/SKILL.md`). |
+| `<part>.js` | The part script: the source of truth. The engine's conventions apply (`main`, `defaultParams`, `paramRanges`, `expect`; see `engine/skill/gooey-3d-cad/SKILL.md`). |
 | `<part>.studio.json` | `gooey-studio-scene/v1`: parameter overrides and the look. Worth committing. |
 | `.studio/` | Scratch space (it ignores itself in git): `build/` holds the latest good mesh per part, `chat/` the conversations, `history/` the script and scene from before each agent turn (for "revert"), and `export/` STEP exports. |
 

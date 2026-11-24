@@ -237,7 +237,8 @@ impl Library {
         let m = crate::manifest::ManifestMaterial {
             id: id.to_owned(),
             finish: Some(name.to_owned()),
-            color: color.unwrap_or(&e.color).to_owned(),
+            color: Some(color.unwrap_or(&e.color).to_owned()),
+            look: None,
             roughness: e.roughness,
             metalness: e.metalness,
             opacity: e.opacity,
