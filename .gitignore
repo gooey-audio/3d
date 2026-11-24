@@ -1,5 +1,6 @@
 target/
 .context/
+/.env
 # castkit's own STLs are reproducible from the spec; only report.json is committed.
 engine/fixtures/*/out/*.stl
 node_modules/

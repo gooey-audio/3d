@@ -6,12 +6,12 @@ look, ask the agent for changes, and make path-traced contact sheets and stills.
 
 A Next.js 16 app (App Router, bun) deployed on Vercel (project `bhurlows-projects/3d`). All the
 Rust (gooey-3d: builds, validation, rendering) runs on Modal behind an HTTP API; parts, uploads
-and renders live in the private Vercel Blob store `gooey` under `3d-studio/`. Contracts (Modal
-API, Blob layout): [CONTRACT.md](CONTRACT.md).
+and renders live in a private Vercel Blob workspace per account. Neon Auth manages accounts, and
+Neon Postgres tracks the daily AI allowance. See [CONTRACT.md](CONTRACT.md) for the Modal API and Blob layout.
 
 ## Layout
 
-- `src/proxy.ts`: the password gate (every page and API route but `/login` and `POST /api/login`).
+- `src/app/login/` and `src/app/api/auth/`: Neon Auth Google sign-in and email codes for invited accounts. All Studio API routes verify the session before accessing account data.
 - `src/app/api/`: parts (script, build, mesh, scene, STEP, revert, render), uploads, renders, and
   the agent chat (`api/chat`).
 - `src/components/studio/`: the UI (editor, params and look panels, viewer, render mode).
@@ -23,12 +23,39 @@ API, Blob layout): [CONTRACT.md](CONTRACT.md).
 
 | Name | What |
 |---|---|
-| `STUDIO_PASSWORD` | password for the gate. Unset: everything answers 503 (fails closed). Changing it signs everyone out. |
+| `NEON_AUTH_BASE_URL` | Auth URL for the Neon branch |
+| `NEON_AUTH_COOKIE_SECRET` | At least 32 characters. Generate with `openssl rand -base64 32`. |
+| `DATABASE_URL` | Server-only Neon Postgres connection string for AI usage |
+| `STUDIO_INVITED_EMAILS` | Comma-separated email addresses of trusted beta users. Omit to deny all beta access. |
+| `STUDIO_AI_DAILY_TURNS` | Free AI turns per account per UTC day (default 5) |
+| `STUDIO_AI_GLOBAL_DAILY_TURNS` | Total AI turns across all accounts per UTC day (default 40) |
+| `STUDIO_AI_INTEREST_EMAIL` | Destination for the email link shown when the daily allowance runs out |
 | `BLOB_STORE_ID`, `VERCEL_OIDC_TOKEN` | Blob store auth (OIDC, set by Vercel) |
 | `BLOB_WEBHOOK_PUBLIC_KEY` | set by Vercel with the store; the presigned-upload helper wants it |
 | `MODAL_API_URL`, `STUDIO_MODAL_TOKEN` | the Modal API (`engine/modal/gooey_api.py`). Unset locally: the local fallback below |
 | `DEEPSEEK_API_KEY` | the agent's `deepseek-direct` model; other models go through the AI Gateway (OIDC) |
 | `NEXT_PUBLIC_STUDIO_UNITS` | optional: the default of the units setting (`in`, `cm` or `mm`; default `in`) |
+
+## Prepare a beta deployment
+
+1. Enable Better Auth and email sign-in on the Neon branch. Set up production SMTP for one-time sign-in codes and add the deployment origin to Neon’s trusted domains. Add the local origin when testing locally.
+2. Apply [db/001_chat_usage.sql](db/001_chat_usage.sql) to the database used by `DATABASE_URL`. Keep the connection string and cookie secret server-side.
+3. Set the environment variables for the deployment. Invite only people you trust to run code in the CAD environment. The current CAD worker executes Replicad scripts as JavaScript in a shared process. Isolate untrusted script execution from other jobs, credentials, the filesystem, and network access before enabling public signup.
+4. Sign in from two invited email addresses. Create a part with the same name in both accounts and check that scripts, uploads, chat, and renders are private to each account. Try an uninvited address and verify that it cannot enter the Studio. Set a low allowance in staging and verify that concurrent AI requests cannot exceed it.
+
+An AI turn starts when the server admits a message or retry. It counts even if stopped or if a provider call fails. Allowances reset at midnight UTC. Set either limit to zero to pause AI chat. A limit on turns bounds model requests and each turn has a step and output cap. Provider spend also depends on the model and input size. Set a provider spending cap where available.
+
+Existing files under the old shared `3d-studio/parts/`, `uploads/`, and `renders/` prefixes need an explicit owner before migration. To assign them, copy the owned files to the corresponding paths under `3d-studio/accounts/<sha256-of-Neon-user-id>/`. Omit old turn locks and staging uploads. Leave the shared prefix inaccessible to the hosted app.
+
+### Google sign-in
+
+Neon's shared Google credentials can be used for local testing. To use your own Google app for the beta deployment:
+
+1. Create a **Web application** OAuth client in Google Cloud and add `<NEON_AUTH_BASE_URL>/callback/google` as its authorized redirect URI.
+2. In the Neon branch's Auth settings, set the Google provider to use that OAuth client ID and secret. Add the Studio deployment origin to Neon's trusted domains.
+3. Add each tester's Google account email to `STUDIO_INVITED_EMAILS`. If Google's OAuth consent screen is in testing mode, add those accounts to its test users too.
+
+Neon verifies Google's callback and returns the browser to the Studio at `/api/auth/google/callback`. The Studio checks the resulting session's verified email against the beta invite list before granting access. See [Neon's OAuth setup guide](https://neon.com/docs/auth/guides/setup-oauth).
 
 ## Units
 
@@ -46,7 +73,7 @@ script's units.
 cd studio/hosted
 bun install
 vercel env pull                    # writes .env.local (Blob OIDC token; it expires after ~12 h)
-export STUDIO_PASSWORD=goo
+# Set the Neon and beta environment variables above in .env.local
 # Without MODAL_API_URL, builds and renders run the checkout's gooey-3d:
 export GOOEY_CAD_WORKER=$PWD/../../engine/cad-worker/dist/gooey-cad-worker
 bun run dev                        # http://localhost:3000
@@ -55,8 +82,7 @@ bun run dev                        # http://localhost:3000
 The local fallback runs `../../engine/target/release/gooey-3d` (override with `GOOEY_3D`), so
 build it first (`cargo build --release -p gooey-3d` in `engine/`, and the cad worker). Local
 renders run synchronously inside the request; on Modal they are queued and render mode
-polls every 2 s. Storage is always the real Blob store, so use throwaway part names when testing
-(for example `t-…`) and delete them afterwards.
+polls every 2 s. Storage is always the real Blob store, so use a dedicated test account or disposable part names.
 
 Checks: `bunx tsc --noEmit`, `bun run lint`, `bun run build`.
 
@@ -64,7 +90,7 @@ Checks: `bunx tsc --noEmit`, `bun run lint`, `bun run build`.
 
 - Vercel limits function request bodies to 4.5 MB: STL uploads up to 4 MB go through
   `POST /api/uploads`; larger ones go straight from the browser to Blob with a presigned URL
-  (`/api/uploads/presign`, limited to `3d-studio/uploads/incoming/`) and are then filed under
+  (`/api/uploads/presign`, limited to the signed-in account’s `uploads/incoming/` folder) and are then filed under
   `uploads/<sha256>.stl` by `/api/uploads/register`.
 - Builds take 1–3 s round trip. The editor autosaves 800 ms after typing stops (or on Cmd-S);
   only the newest build's result is applied, and a build whose script or parameters changed

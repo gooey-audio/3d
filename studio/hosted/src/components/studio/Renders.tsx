@@ -359,6 +359,7 @@ type PanelProps = {
   scene: Scene | null;
   hasMesh: boolean;
   parts: PartInfo[];
+  uploadPrefix: string;
   settings: RenderSettings;
   onChange: (s: RenderSettings) => void;
   /** Point the preview along a view. */
@@ -370,7 +371,7 @@ type PanelProps = {
 
 const toggle = <T,>(xs: T[], x: T) => (xs.includes(x) ? xs.filter((y) => y !== x) : [...xs, x]);
 
-export function RenderPanel({ part, scene, hasMesh, parts, settings: s, onChange, onFrame, onRender, busy, error }: PanelProps) {
+export function RenderPanel({ part, scene, hasMesh, parts, uploadPrefix, settings: s, onChange, onFrame, onRender, busy, error }: PanelProps) {
   const set = (p: Partial<RenderSettings>) => onChange({ ...s, ...p });
   const [custom, setCustom] = useState("#3d5a80");
   if (!part) return <div className="render-panel pad muted">Make a part in the editor to render it.</div>;
@@ -565,7 +566,7 @@ export function RenderPanel({ part, scene, hasMesh, parts, settings: s, onChange
         <Slider label="rig turn" min={-180} max={180} step={5} value={look.environment.rotation_deg} unit="°" set={(v) => set({ rotation: v })} />
         <Slider label="exposure" min={0.2} max={3} step={0.05} value={look.exposure} set={(v) => set({ exposure: v })} />
 
-        {!still && <Compare part={part} parts={parts} extra={s.extra} onChange={(extra) => set({ extra })} />}
+        {!still && <Compare part={part} parts={parts} uploadPrefix={uploadPrefix} extra={s.extra} onChange={(extra) => set({ extra })} />}
       </div>
       <div className="render-go">
         {error && <p className="error small">{error}</p>}
@@ -590,7 +591,7 @@ function Slider({ label, min, max, step, value, unit, set }: { label: string; mi
 }
 
 /** Other parts and uploaded STLs to put on the same sheet. */
-function Compare({ part, parts, extra, onChange }: { part: string; parts: PartInfo[]; extra: string[]; onChange: (x: string[]) => void }) {
+function Compare({ part, parts, uploadPrefix, extra, onChange }: { part: string; parts: PartInfo[]; uploadPrefix: string; extra: string[]; onChange: (x: string[]) => void }) {
   const [open, setOpen] = useState(extra.length > 0);
   const [uploads, setUploads] = useState<Upload[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -617,7 +618,7 @@ function Compare({ part, parts, extra, onChange }: { part: string; parts: PartIn
         } else {
           // Past the function body limit: straight to Blob with a presigned URL, then filed.
           const id = crypto.randomUUID().replace(/-/g, "");
-          const pathname = `3d-studio/uploads/incoming/${id}.stl`;
+          const pathname = `${uploadPrefix}${id}.stl`;
           await uploadPresigned(pathname, f, {
             access: "private",
             handleUploadUrl: "/api/uploads/presign",

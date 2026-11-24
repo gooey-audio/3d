@@ -2,6 +2,8 @@
 import "server-only";
 import { connection, NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
+import { requestOrigin, studioAccount } from "./auth";
+import { inWorkspace } from "./workspace";
 import { SceneError } from "./scene";
 import { StoreError, validPart } from "./store";
 
@@ -26,19 +28,38 @@ export function errorResponse(e: unknown): Response {
     return NextResponse.json({ error: `${i.path.join(".") || "body"}: ${i.message}` }, { status: 400 });
   }
   console.error(e);
-  return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+  return NextResponse.json({ error: "The studio could not complete the request." }, { status: 500 });
 }
 
-/** Wraps a handler: request-time only (never prerendered) and errors mapped to JSON. */
-export function route<C>(fn: (req: NextRequest, ctx: C) => Promise<Response>) {
+type Handler<C> = (req: NextRequest, ctx: C) => Promise<Response>;
+
+/** Runs at request time and gives every response (including errors) private cache semantics. */
+export function publicRoute<C>(fn: Handler<C>) {
   return async (req: NextRequest, ctx: C): Promise<Response> => {
+    await connection();
+    let response: Response;
     try {
-      await connection();
-      return await fn(req, ctx);
+      const origin = req.headers.get("origin");
+      if (req.method !== "GET" && req.method !== "HEAD" && origin && origin !== requestOrigin(req.headers)) {
+        throw fail(403, "Cross-origin request.");
+      }
+      response = await fn(req, ctx);
     } catch (e) {
-      return errorResponse(e);
+      response = errorResponse(e);
     }
+    response.headers.set("cache-control", "private, no-store");
+    return response;
   };
+}
+
+export function route<C>(fn: (req: NextRequest, ctx: C, accountId: string) => Promise<Response>) {
+  return publicRoute(async (req, ctx: C) => {
+    const account = await studioAccount();
+    if (account.status === "unavailable") throw fail(503, "Sign-in is temporarily unavailable.");
+    if (account.status === "denied") throw fail(403, "This account does not have beta access.");
+    if (account.status !== "ok") throw fail(401, "Sign in to use the studio.");
+    return inWorkspace(account.user.id, () => fn(req, ctx, account.user.id));
+  });
 }
 
 export async function body<T>(req: NextRequest, schema: z.ZodType<T>): Promise<T> {

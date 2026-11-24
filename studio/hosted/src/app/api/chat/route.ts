@@ -7,6 +7,10 @@
 // The conversation is stored when the turn ends, also when it was stopped or failed, and the
 // lock is released after that.
 import { after } from "next/server";
+import { errorResponse, fail, route } from "@/lib/http";
+import { reserveChatTurn } from "@/lib/chat-quota";
+import { CHAT_LIMIT } from "@/lib/chat-quota-shared";
+import { inWorkspace } from "@/lib/workspace";
 import { convertToModelMessages, createIdGenerator, createUIMessageStreamResponse, isStepCount, streamText, toUIMessageStream, type ModelMessage } from "ai";
 import { agentTools, context, systemPrompt } from "@/lib/agent";
 import * as lock from "@/lib/agent-lock";
@@ -20,13 +24,14 @@ export const maxDuration = 300;
 
 const bad = (status: number, error: string) => Response.json({ error }, { status });
 
-export async function POST(req: Request) {
+export const POST = route(async (req, _ctx, accountId) => {
   let body: { part?: unknown; model?: unknown; message?: unknown; units?: unknown };
   try {
     body = await req.json();
   } catch {
     return bad(400, "body must be JSON");
   }
+  if (!body || typeof body !== "object") return bad(400, "body must be a JSON object");
   const { part, model: modelId } = body;
   if (typeof part !== "string" || !store.validPart(part)) return bad(400, "bad or missing `part`");
   if (!isModel(modelId)) return bad(400, `unknown model \`${String(modelId)}\``);
@@ -58,8 +63,7 @@ export async function POST(req: Request) {
   const tools = agentTools(part, { vision: resolved.vision });
   try {
     messages = mergeHistory(await store.readChat<ChatMessage>(part), message);
-    checkpoint = await store.checkpoint(part);
-    modelMessages = await convertToModelMessages(prepareHistory(messages), { tools, ignoreIncompleteToolCalls: true });
+    modelMessages = await convertToModelMessages(prepareHistory(messages.slice(-12)), { tools, ignoreIncompleteToolCalls: true });
     // The fresh part state (and the faces the user picked) go in front of the user's words for
     // this turn only (not stored).
     const last = modelMessages[modelMessages.length - 1];
@@ -70,7 +74,19 @@ export async function POST(req: Request) {
   } catch (e) {
     await unlock();
     console.error(`[chat ${part}] could not start the turn:`, e);
-    return bad(500, `could not start the turn: ${e instanceof Error ? e.message : String(e)}`);
+    return errorResponse(e);
+  }
+  try {
+    const reservation = await reserveChatTurn(accountId);
+    if (!reservation.accepted) {
+      throw fail(429, reservation.quota.sharedLimitReached
+        ? "The studio has reached its daily AI limit."
+        : "You’ve used all of your free AI turns for today.", { code: CHAT_LIMIT, quota: reservation.quota });
+    }
+    checkpoint = await store.checkpoint(part);
+  } catch (e) {
+    await unlock();
+    throw e;
   }
   const startedAt = Date.now();
 
@@ -81,13 +97,15 @@ export async function POST(req: Request) {
     messages: modelMessages,
     tools,
     stopWhen: isStepCount(MAX_STEPS),
+    maxOutputTokens: 4096,
+    maxRetries: 0,
     abortSignal: req.signal,
     ...(resolved.reasoning ? { reasoning: resolved.reasoning } : {}),
     // Gateway: prompt caching where the provider supports it; OpenAI: stream reasoning summaries.
     providerOptions: resolved.via === "gateway" ? { gateway: { caching: "auto" }, openai: { reasoningSummary: "auto" } } : undefined,
     // Keep the lock alive while the turn makes progress.
     onStepEnd: () => {
-      if (!released) void lock.refresh(part, turn).catch(() => {});
+      if (!released) void inWorkspace(accountId, () => lock.refresh(part, turn)).catch(() => {});
     },
     onError: ({ error }) => {
       failure ??= errorText(modelId, error);
@@ -114,7 +132,7 @@ export async function POST(req: Request) {
       failure ??= errorText(modelId, error);
       return failure;
     },
-    onEnd: async ({ messages: all, isAborted, isCancelled }) => {
+    onEnd: ({ messages: all, isAborted, isCancelled }) => inWorkspace(accountId, async () => {
       try {
         let out = all;
         const lastMsg = out[out.length - 1];
@@ -133,8 +151,8 @@ export async function POST(req: Request) {
         await unlock();
         saved();
       }
-    },
+    }),
   });
 
   return createUIMessageStreamResponse({ stream });
-}
+});

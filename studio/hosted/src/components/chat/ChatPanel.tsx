@@ -15,12 +15,14 @@ import {
   type LookResult,
   type ScriptDiff,
 } from "@/lib/agent-shared";
+import { CHAT_LIMIT, MAX_CHAT_TEXT, type ChatQuota } from "@/lib/chat-quota-shared";
 import type { FaceSelection } from "@/lib/selection";
 import { DEFAULT_UNITS, fmtLength, parseUnits, type Units } from "@/lib/units";
 import styles from "./ChatPanel.module.css";
 
 export type ChatPanelProps = {
   part: string;
+  interestUrl?: string;
   /** Called when a tool changed the part's script, scene or build: reload them. */
   onPartChanged: () => void;
   /** True while a turn runs (the editor is read-only then). */
@@ -47,6 +49,14 @@ function loadModels(): Promise<ModelList> {
       throw e;
     });
   return modelsPromise;
+}
+
+function chatErrorCode(e: Error | undefined): string | undefined {
+  try {
+    return e && JSON.parse(e.message)?.code;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The error body of a failed request is `{"error": "..."}`; streamed errors are plain text. */
@@ -79,7 +89,35 @@ export function ChatPanel(props: ChatPanelProps) {
   return <PartChat key={props.part} {...props} />;
 }
 
-function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelectionChange, units = DEFAULT_UNITS }: ChatPanelProps) {
+function PartChat({ part, interestUrl, onPartChanged, onBusyChange, selection = [], onSelectionChange, units = DEFAULT_UNITS }: ChatPanelProps) {
+  const [quota, setQuota] = useState<ChatQuota | null>(null);
+  const [quotaError, setQuotaError] = useState(false);
+  const refreshQuota = useCallback(() => {
+    return fetch("/api/chat/quota", { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<ChatQuota>;
+      })
+      .then((next) => {
+        setQuota(next);
+        setQuotaError(false);
+      })
+      .catch(() => setQuotaError(true));
+  }, []);
+
+  const resetAt = quota?.resetAt;
+  useEffect(() => {
+    void refreshQuota();
+    const refresh = () => void refreshQuota();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [refreshQuota]);
+  useEffect(() => {
+    if (!resetAt) return;
+    const timer = setTimeout(() => void refreshQuota(), Math.max(1000, Date.parse(resetAt) - Date.now() + 1000));
+    return () => clearTimeout(timer);
+  }, [resetAt, refreshQuota]);
+
   const [models, setModels] = useState<ModelList | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [text, setText] = useState("");
@@ -132,7 +170,11 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
   const { messages, setMessages, sendMessage, regenerate, status, stop, error, clearError } = useChat<ChatMessage>({
     id: `chat:${part}`,
     transport,
-    onFinish: () => changedRef.current(),
+    onFinish: () => {
+      changedRef.current();
+      void refreshQuota();
+    },
+    onError: () => void refreshQuota(),
   });
   const busy = status === "submitted" || status === "streaming";
 
@@ -162,14 +204,17 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
   // sent again once that turn is over.
   const holder = lockOf(error);
   const locked = holder !== null;
+  const quotaRejected = chatErrorCode(error) === CHAT_LIMIT;
+  const exhausted = !!quota && (quota.remaining === 0 || quota.sharedLimitReached);
+  const canSend = !!quota && !exhausted && !quotaError && !!models?.models.some((entry) => entry.id === model && entry.available);
   useEffect(() => {
-    if (!locked || !pending.current) return;
+    if ((!locked && !quotaRejected) || !pending.current) return;
     const p = pending.current;
     pending.current = null;
     setMessages((ms) => (ms.length && ms[ms.length - 1].role === "user" && (!p.id || ms[ms.length - 1].id === p.id) ? ms.slice(0, -1) : ms));
     setText((t) => t || p.text);
     if (p.selection.length) onSelectionChange?.(p.selection);
-  }, [locked, setMessages, onSelectionChange]);
+  }, [locked, quotaRejected, setMessages, onSelectionChange]);
 
   // Reload the part as soon as a tool that changed it reports back.
   useEffect(() => {
@@ -208,7 +253,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
 
   const send = () => {
     const t = text.trim();
-    if (!t || busy || !model || !loaded) return;
+    if (!t || busy || !model || !loaded || !canSend) return;
     clearError();
     setNote(null);
     setText("");
@@ -222,7 +267,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
 
   // Re-run the last user message (after an error or a stop). The server drops the old reply.
   const retry = () => {
-    if (busy || !model) return;
+    if (busy || !model || !canSend) return;
     clearError();
     setNote(null);
     pending.current = null;
@@ -340,7 +385,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
               {!(busy && m.id === lastId) && (
                 <div className={styles.foot}>
                   <span>{label(m.metadata?.model)}</span>
-                  {m.id === lastId && (m.metadata?.error || m.metadata?.stopped) && (
+                  {m.id === lastId && canSend && (m.metadata?.error || m.metadata?.stopped) && (
                     <button className={styles.link} disabled={busy} onClick={retry} title="run the last message again">
                       retry
                     </button>
@@ -370,13 +415,13 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
             </div>
           </div>
         )}
-        {error && !locked && !lastMeta?.error && (
+        {error && !locked && !quotaRejected && !lastMeta?.error && (
           <div className={styles.error}>
             {(() => {
               const msg = errorMessage(error);
               return model && !msg.startsWith(`${model}:`) ? `${label(model)}: ${msg}` : msg;
             })()}
-            {messages[messages.length - 1]?.role === "user" && (
+            {canSend && messages[messages.length - 1]?.role === "user" && (
               <div>
                 <button className={styles.link} onClick={retry}>
                   retry
@@ -405,9 +450,29 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
         </div>
       )}
 
+      <div className={styles.quota} aria-live="polite">
+        {quotaError ? (
+          <>AI usage is temporarily unavailable. <button className={styles.link} onClick={() => void refreshQuota()}>Try again</button></>
+        ) : quota ? (
+          exhausted ? (
+            <>
+              <span>
+                {quota.sharedLimitReached ? "Studio AI limit reached." : "You’ve used today’s free AI turns."} Resets at 00:00 UTC.
+              </span>
+              {interestUrl && <a className={styles.link} href={interestUrl}>Email us for more AI access</a>}
+            </>
+          ) : (
+            <span>{quota.remaining} of {quota.limit} free AI turns left today · Resets at 00:00 UTC</span>
+          )
+        ) : (
+          <span>Checking AI usage…</span>
+        )}
+      </div>
       <div className={styles.input}>
         <textarea
           value={text}
+          maxLength={MAX_CHAT_TEXT}
+          aria-label="Message the AI assistant"
           placeholder="Describe a change… (Enter to send, Shift+Enter for a new line)"
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
@@ -422,7 +487,7 @@ function PartChat({ part, onPartChanged, onBusyChange, selection = [], onSelecti
             Stop
           </button>
         ) : (
-          <button className={styles.button} onClick={send} disabled={!text.trim() || !model || !loaded}>
+          <button className={styles.button} onClick={send} disabled={!text.trim() || !canSend || !loaded}>
             Send
           </button>
         )}

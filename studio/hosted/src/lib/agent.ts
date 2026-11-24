@@ -1,6 +1,7 @@
 // The embedded CAD agent: system prompt, per-turn context and tools over the shared part
 // libraries. A port of studio/server/src/agent.rs. Server-only.
 import "server-only";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { tool, type JSONValue, type ToolResultPart, type ToolSet } from "ai";
 import { z } from "zod";
 import { unifiedDiff } from "./agent-diff";
@@ -206,13 +207,14 @@ export function agentTools(part: string, opts: { vision?: boolean } = {}) {
   const vision = !!opts.vision;
   // One tool at a time: the part's files are read-modify-write, and a model may call several
   // tools in one step.
+  const runInWorkspace = AsyncLocalStorage.snapshot();
   let queue: Promise<unknown> = Promise.resolve();
   const guard =
     <A, R, O>(f: (a: A, o: O) => Promise<R>) =>
     (a: A, o: O) => {
       const run = queue.then(async () => {
         try {
-          return await f(a, o);
+          return await runInWorkspace(f, a, o);
         } catch (e) {
           return fail(e);
         }

@@ -10,8 +10,6 @@ export const GET = route(async (req, ctx: { params: Promise<{ id: string }> }) =
     headers: {
       "content-type": "image/png",
       "content-length": String(img.size),
-      // A job's image never changes once written.
-      "cache-control": "private, max-age=86400, immutable",
       ...(download ? { "content-disposition": `attachment; filename="${id}.png"` } : {}),
     },
   });

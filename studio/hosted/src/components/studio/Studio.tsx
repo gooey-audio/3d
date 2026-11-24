@@ -9,6 +9,7 @@
 // concurrent read-modify-writes on the server cannot lose a change.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatPanel } from "@/components/chat/ChatPanel";
+import { authClient } from "@/lib/auth-client";
 import { patchScene as applyPatch, resolve, viewDirection, type Scene } from "@/lib/scene";
 import type { Face, FaceSelection } from "@/lib/selection";
 import { DEFAULT_UNITS, fmtSize, fmtStep, fmtVolume, parseUnits, reportUnits, UNIT_LABELS, UNITS, UNITS_STORAGE_KEY, type Units } from "@/lib/units";
@@ -67,7 +68,7 @@ function compose(a: Record<string, unknown>, b: Record<string, unknown>): Record
   return out;
 }
 
-export function Studio() {
+export function Studio({ accountEmail, uploadPrefix, interestUrl }: { accountEmail: string; uploadPrefix: string; interestUrl?: string }) {
   const [parts, setParts] = useState<PartInfo[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("editor");
@@ -651,8 +652,13 @@ export function Studio() {
   };
 
   const signOut = async () => {
-    await fetch("/api/logout", { method: "POST" });
-    location.href = "/login";
+    try {
+      const { error } = await authClient.signOut();
+      if (error) throw new Error(error.message ?? "Could not sign out.");
+      location.replace("/login");
+    } catch (e) {
+      setBanner({ text: errorMessage(e) });
+    }
   };
 
   const err = build && !build.ok ? (build.error ?? null) : null;
@@ -746,6 +752,7 @@ export function Studio() {
             delete
           </button>
         )}
+        <span className="muted small account-email" title={accountEmail}>{accountEmail}</span>
         <button className="link muted" onClick={signOut}>
           sign out
         </button>
@@ -801,6 +808,7 @@ export function Studio() {
               hasMesh={hasMesh}
               parts={parts}
               settings={renderSettings}
+              uploadPrefix={uploadPrefix}
               onChange={setRenderSettings}
               onFrame={frame}
               onRender={startRender}
@@ -913,7 +921,14 @@ export function Studio() {
               </div>
             )}
             {look.resolved?.material.finish && mode !== "renders" && <div className="finish">{look.resolved.material.label ?? look.resolved.material.finish}</div>}
-            {!current && <div className="empty muted">No parts yet: make one with New part.</div>}
+            {!current && (
+              <div className="empty muted">
+                <div className="workspace-empty">
+                  <strong>Your workspace</strong>
+                  <p>Choose New part to open a starter model. Edit its script or ask the AI assistant to make a change.</p>
+                </div>
+              </div>
+            )}
           </div>
           {mode === "renders" && openJob && (
             <RenderView
@@ -940,6 +955,7 @@ export function Studio() {
           {current ? (
             <ChatPanel
               part={current}
+              interestUrl={interestUrl}
               onPartChanged={onPartChanged}
               onBusyChange={onBusyChange}
               selection={sel}

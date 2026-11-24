@@ -61,7 +61,14 @@ with `views[0]` and `materials[0]`. Returns at once: `{"call_id": "fc-..."}`.
 { "status": "failed", "error": "..." }
 ```
 
-## Blob layout (`3d-studio/`, private, read and written through `src/lib/store.ts`)
+## Account storage
+
+In the private Blob store, each workspace starts at `3d-studio/accounts/<sha256-of-Neon-user-id>/`.
+API requests derive that prefix from the verified session. Neon Postgres stores AI turn usage in
+`studio.chat_turns` and accounts are managed by Neon Auth. Legacy shared files require an explicit
+owner before migration.
+
+### Blob paths relative to the workspace
 
 ```
 parts/<part>/script.js       current script
@@ -69,8 +76,9 @@ parts/<part>/scene.json      gooey-studio-scene/v1 (same as the local studio's <
 parts/<part>/build.json      last build summary (BuildSummary, report without faces)
 parts/<part>/mesh.stl        last good mesh
 parts/<part>/chat.json       UI messages of the agent conversation
-parts/<part>/history/<ts>.js script checkpoints (before agent turns)
+parts/<part>/history/<ts>.json script and scene checkpoints (before agent turns)
 uploads/<sha256>.stl, uploads/<sha256>.json
+uploads/incoming/<id>.stl   temporary direct upload awaiting registration
 renders/<id>.json            render job record; renders/<id>.png when done
 ```
 
@@ -80,5 +88,5 @@ renders/<id>.json            render job record; renders/<id>.png when done
 |---|---|
 | `BLOB_STORE_ID`, `VERCEL_OIDC_TOKEN` | Blob store auth (OIDC; set by Vercel; `vercel env pull` locally) |
 | `MODAL_API_URL`, `STUDIO_MODAL_TOKEN` | the Modal API above. Unset locally means a dev fallback that runs `engine/target/release/gooey-3d` (see `src/lib/modal.ts`) |
-| `STUDIO_PASSWORD` | the temporary password gate (`goo`) |
+| `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET`, `DATABASE_URL`, `STUDIO_INVITED_EMAILS` | Neon Auth, database, and beta access settings. See [README.md](README.md). |
 | `DEEPSEEK_API_KEY` | the `deepseek-direct` model; other models go through the AI Gateway (OIDC) |
