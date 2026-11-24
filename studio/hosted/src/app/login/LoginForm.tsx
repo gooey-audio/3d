@@ -3,16 +3,29 @@
 import { useState, type FormEvent } from "react";
 import { authClient } from "@/lib/auth-client";
 
-export function LoginForm() {
+export function LoginForm({ googleFailed }: { googleFailed: boolean }) {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [sent, setSent] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<"email" | "google" | null>(null);
+  const [error, setError] = useState(googleFailed ? "Google sign-in did not finish. Try again or use an email code." : "");
+
+  async function signInWithGoogle() {
+    setBusy("google");
+    setError("");
+    try {
+      const result = await authClient.signIn.social({ provider: "google" });
+      if (result.error || !result.data?.redirect) throw new Error();
+      // The auth client follows the provider redirect.
+    } catch {
+      setError("Could not start Google sign-in. Try again or use an email code.");
+      setBusy(null);
+    }
+  }
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setBusy(true);
+    setBusy("email");
     setError("");
     const address = email.trim().toLowerCase();
     try {
@@ -28,12 +41,16 @@ export function LoginForm() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Sign-in failed. Try again.");
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   return (
     <form className="login-form" onSubmit={submit}>
+      <button className="primary" type="button" disabled={!!busy} onClick={signInWithGoogle}>
+        {busy === "google" ? "Connecting to Google…" : "Continue with Google"}
+      </button>
+      <div className="login-divider">or use an email code</div>
       <label htmlFor={sent ? "code" : "email"}>{sent ? "Sign-in code" : "Invited email address"}</label>
       {sent ? (
         <>
@@ -45,9 +62,9 @@ export function LoginForm() {
         <input key="email" id="email" name="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
           autoComplete="email" placeholder="you@example.com" autoFocus required />
       )}
-      <button className="primary" type="submit" disabled={busy}>{sent ? "Sign in" : "Email me a code"}</button>
+      <button className="primary" type="submit" disabled={!!busy}>{sent ? "Sign in" : "Email me a code"}</button>
       {sent && (
-        <button className="link" type="button" disabled={busy} onClick={() => { setSent(false); setCode(""); setError(""); }}>
+        <button className="link" type="button" disabled={!!busy} onClick={() => { setSent(false); setCode(""); setError(""); }}>
           Use another address or request a new code
         </button>
       )}

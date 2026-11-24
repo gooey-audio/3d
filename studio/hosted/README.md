@@ -11,7 +11,7 @@ Neon Postgres tracks the daily AI allowance. See [CONTRACT.md](CONTRACT.md) for 
 
 ## Layout
 
-- `src/app/login/` and `src/app/api/auth/`: Neon Auth email-code sign-in for invited accounts. All Studio API routes verify the session before accessing account data.
+- `src/app/login/` and `src/app/api/auth/`: Neon Auth Google sign-in and email codes for invited accounts. All Studio API routes verify the session before accessing account data.
 - `src/app/api/`: parts (script, build, mesh, scene, STEP, revert, render), uploads, renders, and
   the agent chat (`api/chat`).
 - `src/components/studio/`: the UI (editor, params and look panels, viewer, render mode).
@@ -46,6 +46,16 @@ Neon Postgres tracks the daily AI allowance. See [CONTRACT.md](CONTRACT.md) for 
 An AI turn starts when the server admits a message or retry. It counts even if stopped or if a provider call fails. Allowances reset at midnight UTC. Set either limit to zero to pause AI chat. A limit on turns bounds model requests and each turn has a step and output cap. Provider spend also depends on the model and input size. Set a provider spending cap where available.
 
 Existing files under the old shared `3d-studio/parts/`, `uploads/`, and `renders/` prefixes need an explicit owner before migration. To assign them, copy the owned files to the corresponding paths under `3d-studio/accounts/<sha256-of-Neon-user-id>/`. Omit old turn locks and staging uploads. Leave the shared prefix inaccessible to the hosted app.
+
+### Google sign-in
+
+Neon's shared Google credentials can be used for local testing. To use your own Google app for the beta deployment:
+
+1. Create a **Web application** OAuth client in Google Cloud and add `<NEON_AUTH_BASE_URL>/callback/google` as its authorized redirect URI.
+2. In the Neon branch's Auth settings, set the Google provider to use that OAuth client ID and secret. Add the Studio deployment origin to Neon's trusted domains.
+3. Add each tester's Google account email to `STUDIO_INVITED_EMAILS`. If Google's OAuth consent screen is in testing mode, add those accounts to its test users too.
+
+Neon verifies Google's callback and returns the browser to the Studio at `/api/auth/google/callback`. The Studio checks the resulting session's verified email against the beta invite list before granting access. See [Neon's OAuth setup guide](https://neon.com/docs/auth/guides/setup-oauth).
 
 ## Units
 

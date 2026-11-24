@@ -7,14 +7,17 @@ import { LoginForm } from "./LoginForm";
 
 export const metadata: Metadata = { title: "Sign in · gooey-studio" };
 
-export default function LoginPage() {
-  return <Suspense><AccountSignIn /></Suspense>;
+type SearchParams = Promise<{ google?: string | string[] }>;
+
+export default function LoginPage({ searchParams }: { searchParams: SearchParams }) {
+  return <Suspense><AccountSignIn searchParams={searchParams} /></Suspense>;
 }
 
-async function AccountSignIn() {
+async function AccountSignIn({ searchParams }: { searchParams: SearchParams }) {
   await connection();
   const account = await studioAccount({ page: true });
   if (account.status === "ok") redirect("/");
+  const { google } = await searchParams;
   return (
     <main className="login">
       <section className="login-card">
@@ -26,7 +29,7 @@ async function AccountSignIn() {
           <>
             <p className="muted">Sign in to the private beta to access your parts, conversations, and renders.</p>
             {account.status === "denied" && <p className="error" role="alert">This account does not have beta access.</p>}
-            <LoginForm />
+            <LoginForm googleFailed={google === "failed"} />
           </>
         )}
       </section>

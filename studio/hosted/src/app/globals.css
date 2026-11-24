@@ -141,6 +141,7 @@ header button.link.muted:hover { color: var(--text); }
 .login-form p { margin: 0; }
 .login-form input { padding: 9px; }
 .login-form .primary { padding: 9px; }
+.login-divider { text-align: center; color: var(--muted); }
 .workspace-empty { text-align: center; max-width: 30ch; padding: 12px; }
 .workspace-empty strong { color: var(--text); }
 .account-email { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
