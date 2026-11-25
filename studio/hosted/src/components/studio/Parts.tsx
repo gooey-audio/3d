@@ -4,7 +4,6 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { authClient } from "@/lib/auth-client";
 import { UNITS_SETTING, useSetting } from "@/lib/settings";
 import { fmtSize, type Units } from "@/lib/units";
 import { api, errorMessage, type PartInfo } from "./api";
@@ -63,16 +62,6 @@ export function Parts({ accountEmail, isAdmin = false }: { accountEmail: string;
     }
   };
 
-  const signOut = async () => {
-    try {
-      const { error } = await authClient.signOut();
-      if (error) throw new Error(error.message ?? "Could not sign out.");
-      location.replace("/login");
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  };
-
   return (
     <div className="app">
       <header>
@@ -113,12 +102,16 @@ export function Parts({ accountEmail, isAdmin = false }: { accountEmail: string;
           </form>
         )}
         <span className="spacer" />
-        <span className="muted small account-email" title={isAdmin ? `${accountEmail} (admin)` : accountEmail}>
-          {accountEmail}
-        </span>
-        <button className="link muted" onClick={signOut}>
-          sign out
-        </button>
+        <Link
+          className="button settings-link"
+          href="/settings"
+          prefetch={false}
+          title={`Settings · ${accountEmail}${isAdmin ? " (admin)" : ""}`}
+          aria-label={`Settings (${accountEmail})`}
+        >
+          <span aria-hidden="true">⚙</span>
+          <span className="account-email">{accountEmail}</span>
+        </Link>
       </header>
       {error && (
         <div className="banner">

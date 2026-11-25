@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { connection } from "next/server";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
+import { aiSpend } from "@/lib/ai-spend";
 import { studioAccount } from "@/lib/auth";
 import { aiInterestUrl } from "@/lib/chat-quota";
 import { listModels } from "@/lib/models";
@@ -21,6 +22,14 @@ async function AccountSettings({ searchParams }: { searchParams: SearchParams })
   if (account.status !== "ok") redirect("/login");
   // The part the studio had open, so the back link returns to it.
   const { part } = await searchParams;
+  // This month's AI spend, read here and only for admins (never sent to anyone else). A
+  // database outage shows as unavailable rather than failing the page.
+  const spend = account.admin
+    ? await aiSpend().catch((e) => {
+        console.error("reading the AI spend failed", e);
+        return null;
+      })
+    : null;
 
   return (
     <Settings
@@ -28,8 +37,8 @@ async function AccountSettings({ searchParams }: { searchParams: SearchParams })
       backHref={typeof part === "string" && part ? `/?part=${encodeURIComponent(part)}` : "/"}
       models={listModels()}
       interestUrl={aiInterestUrl()}
-      // No admin role yet: the section is a placeholder for later admin settings.
-      isAdmin={false}
+      isAdmin={account.admin}
+      spend={spend}
     />
   );
 }

@@ -1,13 +1,15 @@
 "use client";
 // The settings page: account, per-browser preferences (lib/settings.ts, shared with the studio
-// and the chat), today's AI allowance and, for admins, an admin section.
+// and the chat), today's AI allowance and, for admins, this month's AI spend.
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import type { AiSpend } from "@/lib/ai-spend";
 import { authClient } from "@/lib/auth-client";
 import type { ChatQuota } from "@/lib/chat-quota-shared";
 import type { ModelInfo } from "@/lib/models";
 import { MODEL_SETTING, UNITS_SETTING, useSetting, VIEWER_SETTING } from "@/lib/settings";
 import { UNIT_LABELS, UNITS, type Units } from "@/lib/units";
+import { api, errorMessage } from "@/components/studio/api";
 import type { ViewerOptions } from "@/components/studio/viewer";
 
 type Props = {
@@ -18,6 +20,8 @@ type Props = {
   interestUrl?: string;
   /** Shows the admin section. */
   isAdmin: boolean;
+  /** Admins only: this month's AI spend (null when it could not be read). */
+  spend: AiSpend | null;
 };
 
 const VIEWER_TOGGLES: [keyof ViewerOptions, string, string][] = [
@@ -28,7 +32,7 @@ const VIEWER_TOGGLES: [keyof ViewerOptions, string, string][] = [
   ["banana", "Banana", "a life-size banana beside the part, for scale"],
 ];
 
-export function Settings({ accountEmail, backHref, models, interestUrl, isAdmin }: Props) {
+export function Settings({ accountEmail, backHref, models, interestUrl, isAdmin, spend }: Props) {
   return (
     <div className="settings-page">
       <header>
@@ -36,20 +40,18 @@ export function Settings({ accountEmail, backHref, models, interestUrl, isAdmin 
         <Link className="button" href={backHref}>
           ← Studio
         </Link>
+        <Link className="button" href="/parts">
+          Parts
+        </Link>
         <span className="spacer" />
-        <span className="muted small account-email" title={accountEmail}>{accountEmail}</span>
+        <span className="muted small account-email" title={isAdmin ? `${accountEmail} (admin)` : accountEmail}>{accountEmail}</span>
       </header>
       <main className="settings">
         <h1>Settings</h1>
         <Account email={accountEmail} />
         <Preferences models={models} />
         <AiUsage interestUrl={interestUrl} />
-        {isAdmin && (
-          <section className="settings-card admin" aria-labelledby="settings-admin">
-            <h2 id="settings-admin">Admin</h2>
-            <p className="hint">Studio-wide settings for administrators will appear here.</p>
-          </section>
-        )}
+        {isAdmin && <Admin spend={spend} />}
       </main>
     </div>
   );
@@ -86,7 +88,44 @@ function Account({ email }: { email: string }) {
           {error && <p className="error" role="alert">{error}</p>}
         </div>
       </div>
+      <RestoreExample />
     </section>
+  );
+}
+
+/** Brings back the example part (after deleting it, or to start over beside your own parts). */
+function RestoreExample() {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<{ name: string; restored: boolean } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const restore = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setDone(await api.restoreExample());
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="row">
+      <span>Workspace</span>
+      <div>
+        <button onClick={restore} disabled={busy}>
+          {busy ? "Restoring…" : "Restore example part"}
+        </button>
+        <p className="hint">Adds the example phone stand back to your parts. A part already named example is kept as it is.</p>
+        {done && (
+          <p role="status">
+            {done.restored ? "Restored." : <>You already have a part named <code>{done.name}</code>.</>}{" "}
+            <Link href={`/?part=${encodeURIComponent(done.name)}`}>Open it in the studio</Link>
+          </p>
+        )}
+        {error && <p className="error" role="alert">{error}</p>}
+      </div>
+    </div>
   );
 }
 
@@ -176,7 +215,8 @@ function AiUsage({ interestUrl }: { interestUrl?: string }) {
     return () => window.removeEventListener("focus", refresh);
   }, [load]);
 
-  const exhausted = !!quota && (quota.remaining === 0 || quota.sharedLimitReached);
+  // As the chat decides it (ChatPanel): admins have no personal allowance, the shared limits still apply.
+  const exhausted = !!quota && (quota.sharedLimitReached || quota.budgetExhausted || (!quota.unlimited && quota.remaining === 0));
   const resetAt = quota ? new Date(quota.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
   return (
     <section className="settings-card" aria-labelledby="settings-ai">
@@ -194,13 +234,21 @@ function AiUsage({ interestUrl }: { interestUrl?: string }) {
         ) : (
           <>
             <p>
-              <strong>{quota.remaining}</strong> of {quota.limit} free AI turns left today.
+              {quota.unlimited ? (
+                "Admin: no personal limit on AI turns."
+              ) : (
+                <>
+                  <strong>{quota.remaining}</strong> of {quota.limit} free AI turns left today.
+                </>
+              )}
               {quota.sharedLimitReached && " The studio-wide AI limit for today has been reached."}
+              {quota.budgetExhausted && " The studio’s AI budget for this month is used up; it resets on the 1st at 00:00 UTC."}
             </p>
             <p className="hint">
-              A turn is one message or retry to the agent. The allowance resets at 00:00 UTC ({resetAt} your time).
+              A turn is one message or retry to the agent.{" "}
+              {quota.unlimited ? "The studio-wide daily limit" : "The allowance"} resets at 00:00 UTC ({resetAt} your time).
             </p>
-            {exhausted && interestUrl && (
+            {exhausted && interestUrl && !quota.unlimited && (
               <p>
                 <a href={interestUrl}>
                   Email us for more AI access
@@ -208,6 +256,39 @@ function AiUsage({ interestUrl }: { interestUrl?: string }) {
               </p>
             )}
           </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// A fixed locale: these render on the server too, and must hydrate to the same text.
+const usd = (n: number) => n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+
+/** Studio-wide figures for admins. `spend` is read by the server page, for admins only. */
+function Admin({ spend }: { spend: AiSpend | null }) {
+  // The last day of the month (periodEnd is the next month's first instant), in UTC.
+  const lastDay = spend
+    ? new Date(Date.parse(spend.periodEnd) - 1).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
+    : "";
+  return (
+    <section className="settings-card admin" aria-labelledby="settings-admin">
+      <h2 id="settings-admin">Admin</h2>
+      <div className="row">
+        <span>AI spend</span>
+        {!spend ? (
+          <p>The AI spend is temporarily unavailable. Reload to try again.</p>
+        ) : (
+          <div>
+            <p>
+              <strong>{usd(spend.spentUsd)}</strong> of the {usd(spend.budgetUsd)} monthly budget spent this month.
+            </p>
+            <meter min={0} max={Math.max(spend.budgetUsd, 0.01)} high={spend.budgetUsd * 0.8} value={spend.spentUsd} />
+            <p className="hint">
+              Every account&apos;s AI turns, through {lastDay} (UTC). Turns still running count at their reservation.
+              {spend.budgetUsd > 0 ? "" : " A budget of 0 turns AI chat off."} Set with STUDIO_AI_MONTHLY_BUDGET_USD.
+            </p>
+          </div>
         )}
       </div>
     </section>

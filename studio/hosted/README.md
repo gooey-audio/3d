@@ -13,8 +13,9 @@ Neon Postgres tracks the daily AI allowance and the monthly AI spend. See [CONTR
 
 - `src/app/login/` and `src/app/api/auth/`: Neon Auth Google sign-in and email codes for invited accounts. All Studio API routes verify the session before accessing account data.
 - `src/app/parts/`: the parts screen, a grid of the account's parts with thumbnails (open, create, delete).
-- `src/app/settings/`: the settings page (the gear and email at the header's right): account and sign-out,
-  per-browser preferences, today's AI allowance, and an admin section (not shown until there are admins).
+- `src/app/settings/`: the settings page (the gear and email at the header's right, in the studio and on
+  `/parts`): account and sign-out, restoring the example part, per-browser preferences, today's AI
+  allowance, and for admins this month's AI spend.
 - `src/app/api/`: parts (script, build, mesh, scene, STEP, revert, render), uploads, renders, and
   the agent chat (`api/chat`).
 - `src/components/studio/`: the UI (editor, params and look panels, viewer, render mode).
@@ -86,12 +87,15 @@ script's units.
 
 ## Settings
 
-`/settings` (the gear at the header's right) shows the account and signs out, and edits the
+`/settings` (the gear at the header's right) shows the account and signs out, restores the
+example part (`POST /api/example`, `seedExample({ force: true })`), and edits the
 per-browser preferences: units, the agent model chats start on (the chat's picker changes it
 too), and the preview toggles (edges, wireframe, grid, dims, banana; the buttons over the preview
-change them too). They are in `localStorage`; `src/lib/settings.ts` holds every key and the
-`useSetting` hook, so new preferences go there. A change reaches open studio tabs at once. The
-page also shows today's AI allowance (`GET /api/chat/quota`).
+change them too). They are in `localStorage`; `src/lib/settings.ts` holds every key (the script
+sidebar's too) and the `useSetting` hook, so new preferences go there. A change reaches open studio
+tabs at once. The page also shows today's AI allowance (`GET /api/chat/quota`; "no personal limit"
+for admins). Admins also see this month's AI spend against `STUDIO_AI_MONTHLY_BUDGET_USD`
+(`aiSpend()`, read by the server page and only for admins).
 
 ## Local development
 
@@ -121,7 +125,7 @@ Checks: `bunx tsc --noEmit`, `bun run lint`, `bun run build`.
 - A new account starts with an example part, `example` (a phone stand; `lib/example.ts`),
   written by its first parts listing. The workspace's `seeded` marker keeps it from coming back
   once deleted; accounts that already had parts only get the marker. `seedExample({ force: true })`
-  writes it again (unless a part named `example` exists).
+  (Settings' "Restore example part") writes it again (unless a part named `example` exists).
 - Builds take 1–3 s round trip. The editor autosaves 800 ms after typing stops (or on Cmd-S);
   only the newest build's result is applied, and a build whose script or parameters changed
   while it ran does not replace the stored mesh. Scene patches show in the preview at once and
