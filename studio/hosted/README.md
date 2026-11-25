@@ -98,6 +98,10 @@ Checks: `bunx tsc --noEmit`, `bun run lint`, `bun run build`.
   `POST /api/uploads`; larger ones go straight from the browser to Blob with a presigned URL
   (`/api/uploads/presign`, limited to the signed-in account’s `uploads/incoming/` folder) and are then filed under
   `uploads/<sha256>.stl` by `/api/uploads/register`.
+- A new account starts with an example part, `example` (a phone stand; `lib/example.ts`),
+  written by its first parts listing. The workspace's `seeded` marker keeps it from coming back
+  once deleted; accounts that already had parts only get the marker. `seedExample({ force: true })`
+  writes it again (unless a part named `example` exists).
 - Builds take 1–3 s round trip. The editor autosaves 800 ms after typing stops (or on Cmd-S);
   only the newest build's result is applied, and a build whose script or parameters changed
   while it ran does not replace the stored mesh. Scene patches show in the preview at once and
