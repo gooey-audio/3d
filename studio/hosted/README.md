@@ -13,6 +13,8 @@ Neon Postgres tracks the daily AI allowance and the monthly AI spend. See [CONTR
 
 - `src/app/login/` and `src/app/api/auth/`: Neon Auth Google sign-in and email codes for invited accounts. All Studio API routes verify the session before accessing account data.
 - `src/app/parts/`: the parts screen, a grid of the account's parts with thumbnails (open, create, delete).
+- `src/app/settings/`: the settings page (the gear and email at the header's right): account and sign-out,
+  per-browser preferences, today's AI allowance, and an admin section (not shown until there are admins).
 - `src/app/api/`: parts (script, build, mesh, scene, STEP, revert, render), uploads, renders, and
   the agent chat (`api/chat`).
 - `src/components/studio/`: the UI (editor, params and look panels, viewer, render mode).
@@ -74,13 +76,22 @@ cached in the page per part and mesh version (`mesh_ms` in `GET /api/parts`).
 
 ## Units
 
-Inches by default. The header's units menu (kept per browser) sets the units of every dimension
+Inches by default. The header's units menu (or `/settings`; kept per browser) sets the units of every dimension
 the UI shows (size, volume, grid, dims, picked points, chat chips), the units of new parts, and
 the units the agent answers in. Each script declares its own (`export const units = "in"`), so
 switching the setting never rescales an existing part; the engine builds a script without one
 in its default (`GOOEY_UNITS` on Modal, else inches). Meshes, STEP files, reports and face tables
 are always mm (`lib/units.ts` converts); the agent reads sizes, faces and selections in the
 script's units.
+
+## Settings
+
+`/settings` (the gear at the header's right) shows the account and signs out, and edits the
+per-browser preferences: units, the agent model chats start on (the chat's picker changes it
+too), and the preview toggles (edges, wireframe, grid, dims, banana; the buttons over the preview
+change them too). They are in `localStorage`; `src/lib/settings.ts` holds every key and the
+`useSetting` hook, so new preferences go there. A change reaches open studio tabs at once. The
+page also shows today's AI allowance (`GET /api/chat/quota`).
 
 ## Local development
 

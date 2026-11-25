@@ -90,6 +90,3 @@ export function fmtStep(mm: number, u: Units): string {
   }
   return `${fmtLength(mm, u, 4)} ${u}`;
 }
-
-/** The studio-wide units setting in the browser. */
-export const UNITS_STORAGE_KEY = "studio.units";

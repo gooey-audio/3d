@@ -37,6 +37,12 @@ function quota(usage: Usage, { limit, globalLimit, budget }: Config, unlimited: 
     : { ...shared, unlimited, limit, remaining: Math.max(0, limit - usage.personal) };
 }
 
+/** The "email us for more AI access" link shown when the allowance runs out (STUDIO_AI_INTEREST_EMAIL). */
+export function aiInterestUrl(): string | undefined {
+  const email = process.env.STUDIO_AI_INTEREST_EMAIL?.trim();
+  return email ? `mailto:${encodeURIComponent(email).replace("%40", "@")}?subject=Gooey%20Studio%20AI%20access` : undefined;
+}
+
 /** `unlimited` skips the personal allowance; the turns still count toward the shared limit and budget. */
 export async function chatQuota(accountId: string, { unlimited = false } = {}): Promise<ChatQuota> {
   const cfg = config();
