@@ -65,10 +65,10 @@ function partKey(part: string, file: string): string {
   return key(`parts/${part}/${file}`);
 }
 
-async function write(path: string, body: string | Buffer | Uint8Array, contentType: string) {
+async function write(path: string, body: string | Buffer | Uint8Array, contentType: string, allowOverwrite = true) {
   await put(path, Buffer.isBuffer(body) || typeof body === "string" ? body : Buffer.from(body), {
     access: "private",
-    allowOverwrite: true,
+    allowOverwrite,
     addRandomSuffix: false,
     contentType,
     cacheControlMaxAge: 60,
@@ -128,6 +128,19 @@ export async function readScript(part: string): Promise<string | null> {
 export async function writeScript(part: string, source: string): Promise<string> {
   await write(partKey(part, "script.js"), source, "text/javascript");
   return sha256(source);
+}
+
+/** Writes the script of a new part; false if the part already exists. Blob refuses to
+ *  overwrite, so of two concurrent calls only one creates it. */
+export async function createScript(part: string, source: string): Promise<boolean> {
+  try {
+    await write(partKey(part, "script.js"), source, "text/javascript", false);
+    return true;
+  } catch (e) {
+    // The refusal is not a distinct error type: it exists now, or the write really failed.
+    if ((await readScript(part)) !== null) return false;
+    throw e;
+  }
 }
 
 export async function deletePart(part: string): Promise<void> {
@@ -223,6 +236,18 @@ export async function writeTurn(part: string, t: TurnLock): Promise<void> {
 
 export async function deleteTurn(part: string): Promise<void> {
   await del(partKey(part, "turn.json")).catch(() => {});
+}
+
+/** Whether the workspace was offered the example part (lib/example.ts). Listed rather than
+ *  read, so a failed request throws instead of reading as "not seeded". */
+export async function isSeeded(): Promise<boolean> {
+  const path = key("seeded");
+  const r = await list({ prefix: path, limit: 1 });
+  return r.blobs.some((b) => b.pathname === path);
+}
+
+export async function markSeeded(): Promise<void> {
+  await write(key("seeded"), new Date().toISOString(), "text/plain");
 }
 
 // --- uploads -------------------------------------------------------------------

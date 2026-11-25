@@ -80,6 +80,7 @@ parts/<part>/history/<ts>.json script and scene checkpoints (before agent turns)
 uploads/<sha256>.stl, uploads/<sha256>.json
 uploads/incoming/<id>.stl   temporary direct upload awaiting registration
 renders/<id>.json            render job record; renders/<id>.png when done
+seeded                       marker: the workspace was offered the example part (lib/example.ts)
 ```
 
 ## Environment (Vercel project)
