@@ -38,9 +38,12 @@ function context(): Ctx | null {
     scene.environmentIntensity = 0.6;
     const camera = new THREE.PerspectiveCamera(FOV, WIDTH / HEIGHT, 0.1, 1000);
     // A key light that follows the camera (up and to the left of it), so every part reads alike.
+    // Its target rides along too: left in the scene's origin, the light's direction would depend
+    // on where the part sits rather than on the view.
     const key = new THREE.DirectionalLight(0xffffff, 1.6);
     key.position.set(-1, 1.5, 1);
-    camera.add(key);
+    key.target.position.set(0, 0, -1);
+    camera.add(key, key.target);
     scene.add(camera);
     const material = new THREE.MeshStandardMaterial({ color: 0xc8c8c8, roughness: 0.6, metalness: 0 });
     // A lost context (GPU reset, too many contexts) is rebuilt on the next thumbnail.

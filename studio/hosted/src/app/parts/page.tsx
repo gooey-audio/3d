@@ -15,5 +15,5 @@ async function AccountParts() {
   await connection();
   const account = await studioAccount({ page: true });
   if (account.status !== "ok") redirect("/login");
-  return <Parts accountEmail={account.user.email} />;
+  return <Parts accountEmail={account.user.email} isAdmin={account.admin} />;
 }

@@ -22,7 +22,7 @@ function ago(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { dateStyle: "medium" });
 }
 
-export function Parts({ accountEmail }: { accountEmail: string }) {
+export function Parts({ accountEmail, isAdmin = false }: { accountEmail: string; isAdmin?: boolean }) {
   const router = useRouter();
   const [parts, setParts] = useState<PartInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -115,7 +115,7 @@ export function Parts({ accountEmail }: { accountEmail: string }) {
           </form>
         )}
         <span className="spacer" />
-        <span className="muted small account-email" title={accountEmail}>
+        <span className="muted small account-email" title={isAdmin ? `${accountEmail} (admin)` : accountEmail}>
           {accountEmail}
         </span>
         <button className="link muted" onClick={signOut}>
