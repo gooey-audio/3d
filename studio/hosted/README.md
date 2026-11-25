@@ -7,7 +7,7 @@ look, ask the agent for changes, and make path-traced contact sheets and stills.
 A Next.js 16 app (App Router, bun) deployed on Vercel (project `bhurlows-projects/3d`). All the
 Rust (gooey-3d: builds, validation, rendering) runs on Modal behind an HTTP API; parts, uploads
 and renders live in a private Vercel Blob workspace per account. Neon Auth manages accounts, and
-Neon Postgres tracks the daily AI allowance. See [CONTRACT.md](CONTRACT.md) for the Modal API and Blob layout.
+Neon Postgres tracks the daily AI allowance and the monthly AI spend. See [CONTRACT.md](CONTRACT.md) for the Modal API and Blob layout.
 
 ## Layout
 
@@ -30,6 +30,8 @@ Neon Postgres tracks the daily AI allowance. See [CONTRACT.md](CONTRACT.md) for 
 | `STUDIO_ADMIN_EMAILS` | Comma-separated admin email addresses (e.g. the owner, `brian@brianhurlow.com`). Admins are invited implicitly and have no personal AI allowance. |
 | `STUDIO_AI_DAILY_TURNS` | Free AI turns per account per UTC day (default 5) |
 | `STUDIO_AI_GLOBAL_DAILY_TURNS` | Total AI turns across all accounts per UTC day (default 40) |
+| `STUDIO_AI_MONTHLY_BUDGET_USD` | Global AI spend per UTC calendar month, in USD, across all accounts and models (default 100; `0` pauses AI chat) |
+| `STUDIO_AI_TURN_RESERVE_USD` | The least an admitted turn reserves against the monthly budget until its cost is known (default 0.50); expensive models reserve their worst case, which is more |
 | `STUDIO_AI_INTEREST_EMAIL` | Destination for the email link shown when the daily allowance runs out |
 | `BLOB_STORE_ID`, `VERCEL_OIDC_TOKEN` | Blob store auth (OIDC, set by Vercel) |
 | `BLOB_WEBHOOK_PUBLIC_KEY` | set by Vercel with the store; the presigned-upload helper wants it |
@@ -40,11 +42,14 @@ Neon Postgres tracks the daily AI allowance. See [CONTRACT.md](CONTRACT.md) for 
 ## Prepare a beta deployment
 
 1. Enable Better Auth and email sign-in on the Neon branch. Set up production SMTP for one-time sign-in codes and add the deployment origin to Neon’s trusted domains. Add the local origin when testing locally.
-2. Apply [db/001_chat_usage.sql](db/001_chat_usage.sql) to the database used by `DATABASE_URL`. Keep the connection string and cookie secret server-side.
+2. Apply [db/001_chat_usage.sql](db/001_chat_usage.sql) and [db/002_ai_spend.sql](db/002_ai_spend.sql) to the database used by `DATABASE_URL`. Keep the connection string and cookie secret server-side.
 3. Set the environment variables for the deployment. Invite only people you trust to run code in the CAD environment. The current CAD worker executes Replicad scripts as JavaScript in a shared process. Isolate untrusted script execution from other jobs, credentials, the filesystem, and network access before enabling public signup.
-4. Sign in from two invited email addresses. Create a part with the same name in both accounts and check that scripts, uploads, chat, and renders are private to each account. Try an uninvited address and verify that it cannot enter the Studio. Set a low allowance in staging and verify that concurrent AI requests cannot exceed it.
+4. Cap AI Gateway spend for the project: `vercel ai-gateway budgets set project 3d --amount 100 --refresh-period monthly`. The gateway budget does not cover `deepseek-direct`, which calls DeepSeek with `DEEPSEEK_API_KEY`; the studio's own monthly budget (`STUDIO_AI_MONTHLY_BUDGET_USD`) covers every model. Set a spending limit in the DeepSeek console as well.
+5. Sign in from two invited email addresses. Create a part with the same name in both accounts and check that scripts, uploads, chat, and renders are private to each account. Try an uninvited address and verify that it cannot enter the Studio. Set a low allowance in staging and verify that concurrent AI requests cannot exceed it.
 
 An AI turn starts when the server admits a message or retry. It counts even if stopped or if a provider call fails. Allowances reset at midnight UTC. Set either limit to zero to pause AI chat. Admins (`STUDIO_ADMIN_EMAILS`) skip the per-account limit, but their turns are recorded and count toward the global one, so a zero global limit pauses them too. A limit on turns bounds model requests and each turn has a step and output cap. Provider spend also depends on the model and input size. Set a provider spending cap where available.
+
+The monthly AI budget is a failsafe on top of the turn limits. It applies to every account, admins included. A turn is admitted only while this UTC month's spend plus the turn's worst case fits in `STUDIO_AI_MONTHLY_BUDGET_USD`. The worst case is every step (`MAX_STEPS`) at a 60k-token prompt and the full output cap, priced with the table in `src/lib/models.ts` (at least `STUDIO_AI_TURN_RESERVE_USD`; about $10 for Claude Opus, the $0.50 floor for DeepSeek), and a turn whose prompt grows past that plan stops early rather than outspend it. A call that fails mid-stream is counted at its cap. The turn holds that reservation (in `studio.ai_spend`, under the same lock as the turn limits) until it ends, then records its cost: the AI Gateway's billed cost for each model call, looked up by generation ID, or otherwise an estimate from token usage and the per-model prices in `src/lib/models.ts`. These prices err high. A call stopped mid-stream is estimated at its output cap. A turn that never records its cost keeps its reservation counted. When the budget is used up, chat answers 429 until the next month. `aiSpend()` in `src/lib/ai-spend.ts` reports the month's spend.
 
 Existing files under the old shared `3d-studio/parts/`, `uploads/`, and `renders/` prefixes need an explicit owner before migration. To assign them, copy the owned files to the corresponding paths under `3d-studio/accounts/<sha256-of-Neon-user-id>/`. Omit old turn locks and staging uploads. Leave the shared prefix inaccessible to the hosted app.
 

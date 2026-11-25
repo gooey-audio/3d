@@ -205,7 +205,7 @@ function PartChat({ part, interestUrl, onPartChanged, onBusyChange, selection = 
   const holder = lockOf(error);
   const locked = holder !== null;
   const quotaRejected = chatErrorCode(error) === CHAT_LIMIT;
-  const exhausted = !!quota && (quota.sharedLimitReached || (!quota.unlimited && quota.remaining === 0));
+  const exhausted = !!quota && (quota.sharedLimitReached || quota.budgetExhausted || (!quota.unlimited && quota.remaining === 0));
   const canSend = !!quota && !exhausted && !quotaError && !!models?.models.some((entry) => entry.id === model && entry.available);
   useEffect(() => {
     if ((!locked && !quotaRejected) || !pending.current) return;
@@ -457,7 +457,9 @@ function PartChat({ part, interestUrl, onPartChanged, onBusyChange, selection = 
           exhausted ? (
             <>
               <span>
-                {quota.sharedLimitReached ? "Studio AI limit reached." : "You’ve used today’s free AI turns."} Resets at 00:00 UTC.
+                {quota.budgetExhausted
+                  ? "The studio’s AI budget for this month is used up. Resets on the 1st at 00:00 UTC."
+                  : `${quota.sharedLimitReached ? "Studio AI limit reached." : "You’ve used today’s free AI turns."} Resets at 00:00 UTC.`}
               </span>
               {interestUrl && !quota.unlimited && <a className={styles.link} href={interestUrl}>Email us for more AI access</a>}
             </>
