@@ -24,7 +24,7 @@ export const maxDuration = 300;
 
 const bad = (status: number, error: string) => Response.json({ error }, { status });
 
-export const POST = route(async (req, _ctx, accountId) => {
+export const POST = route(async (req, _ctx, accountId, { admin }) => {
   let body: { part?: unknown; model?: unknown; message?: unknown; units?: unknown };
   try {
     body = await req.json();
@@ -77,7 +77,7 @@ export const POST = route(async (req, _ctx, accountId) => {
     return errorResponse(e);
   }
   try {
-    const reservation = await reserveChatTurn(accountId);
+    const reservation = await reserveChatTurn(accountId, { unlimited: admin });
     if (!reservation.accepted) {
       throw fail(429, reservation.quota.sharedLimitReached
         ? "The studio has reached its daily AI limit."
