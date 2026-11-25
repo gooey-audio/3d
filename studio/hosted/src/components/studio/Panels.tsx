@@ -10,13 +10,28 @@ import type { BuildSummary } from "./api";
 export function useDebounced<A extends unknown[]>(fn: (...a: A) => void, ms: number) {
   const t = useRef<number | undefined>(undefined);
   const f = useRef(fn);
+  const pending = useRef<A | null>(null);
   useLayoutEffect(() => {
     f.current = fn;
   });
-  useEffect(() => () => clearTimeout(t.current), []);
+  // Unmounting (a tab switch, or leaving for /parts or /settings) sends a pending call at once
+  // instead of dropping it.
+  useEffect(
+    () => () => {
+      clearTimeout(t.current);
+      const a = pending.current;
+      pending.current = null;
+      if (a) f.current(...a);
+    },
+    [],
+  );
   return (...a: A) => {
     clearTimeout(t.current);
-    t.current = window.setTimeout(() => f.current(...a), ms);
+    pending.current = a;
+    t.current = window.setTimeout(() => {
+      pending.current = null;
+      f.current(...a);
+    }, ms);
   };
 }
 
