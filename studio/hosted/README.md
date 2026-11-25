@@ -106,3 +106,6 @@ Checks: `bunx tsc --noEmit`, `bun run lint`, `bun run build`.
   only the newest build's result is applied, and a build whose script or parameters changed
   while it ran does not replace the stored mesh. Scene patches show in the preview at once and
   are sent one at a time.
+- The header's sidebar button (Cmd/Ctrl-\\, kept per browser) hides the script | params | look
+  sidebar in editor mode. It is hidden with CSS, so the editor keeps unsaved text, undo history
+  and the autosave timer; while it is hidden, failed builds show as a toast.

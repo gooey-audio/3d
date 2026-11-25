@@ -43,6 +43,7 @@ const TOAST_MS = 8000;
 const EMPTY: Record<string, unknown> = {};
 const VIEW_OPTIONS_KEY = "gooey-studio.viewer-options";
 const NO_OPTIONS: ViewerOptions = { edges: false, wireframe: false, grid: false, dims: false, banana: false };
+const SCRIPT_SIDEBAR_KEY = "gooey-studio.script-sidebar";
 
 /** The build whose mesh (and face table) is stored: this one, or the last good one. */
 const meshRev = (b: BuildSummary) => (b.ok ? b.rev : (b.lastGood?.rev ?? b.rev));
@@ -92,10 +93,13 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
   const [units, setUnitsState] = useState<Units>(DEFAULT_UNITS);
   const [dirty, setDirty] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
+  // The script | params | look sidebar. Hidden with CSS, so the editor keeps its text and undo.
+  const [sidebar, setSidebar] = useState(true);
   const [toast, setToast] = useState<{ text: string; id: number } | null>(null);
   const faceTable = useRef<{ rev: number; topology: string } | null>(null);
   const tabRef = useRef<Tab>("script");
   const modeRef = useRef<Mode>("editor");
+  const sidebarRef = useRef(true);
   const agentBusyRef = useRef(false);
   const seenRev = useRef(0);
   // Editor document: what the server has (`saved`) and what the editor shows.
@@ -170,7 +174,7 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
   const noteBuild = useCallback((b: BuildSummary) => {
     if (b.rev <= seenRev.current) return;
     seenRev.current = b.rev;
-    if (b.ok || (tabRef.current === "script" && modeRef.current === "editor")) return;
+    if (b.ok || (tabRef.current === "script" && modeRef.current === "editor" && sidebarRef.current)) return;
     const e = b.error;
     const where = e?.line ? ` line ${e.line}${e.column ? `:${e.column}` : ""}` : "";
     setToast({ text: `${e?.kind ?? "error"}${where}: ${e?.message ?? "the build failed"}`, id: Date.now() });
@@ -313,6 +317,26 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
     localStorage.setItem(UNITS_STORAGE_KEY, u);
     setUnitsState(u);
   };
+  // The sidebar, kept in localStorage (read after hydration).
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reading localStorage once
+      if (localStorage.getItem(SCRIPT_SIDEBAR_KEY) === "hidden") setSidebar(false);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const showSidebar = useCallback((show: boolean) => {
+    // Keys must not keep going to a hidden editor.
+    const focused = document.activeElement;
+    if (!show && focused instanceof HTMLElement && document.getElementById("script-sidebar")?.contains(focused)) focused.blur();
+    setSidebar(show);
+    try {
+      localStorage.setItem(SCRIPT_SIDEBAR_KEY, show ? "shown" : "hidden");
+    } catch {
+      /* ignore */
+    }
+  }, []);
   const toggleView = (k: keyof ViewerOptions) =>
     setViewOpts((o) => {
       const n = { ...o, [k]: !o[k] };
@@ -324,7 +348,8 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
     tabRef.current = tab;
     modeRef.current = mode;
     agentBusyRef.current = agentBusy;
-  }, [tab, mode, agentBusy]);
+    sidebarRef.current = sidebar;
+  }, [tab, mode, agentBusy, sidebar]);
 
   useEffect(() => {
     if (!toast) return;
@@ -446,9 +471,16 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
   }, [save, runBuild]);
 
   // Shortcuts outside text fields: Cmd/Ctrl-Enter rebuilds, Escape clears the face selection.
+  // Cmd/Ctrl-\ toggles the sidebar from anywhere, the editor too (CodeMirror leaves it unbound).
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || typing(e.target)) return;
+      if (e.defaultPrevented) return;
+      if (e.key === "\\" && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && modeRef.current === "editor") {
+        e.preventDefault();
+        showSidebar(!sidebarRef.current);
+        return;
+      }
+      if (typing(e.target)) return;
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && modeRef.current === "editor") {
         e.preventDefault();
         rebuildNow();
@@ -459,7 +491,7 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [rebuildNow]);
+  }, [rebuildNow, showSidebar]);
 
   /** Restores a checkpoint (saving the current script as one first, so it can be undone). */
   const restoreCheckpoint = useCallback(
@@ -678,6 +710,22 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
     <div className="app">
       <header>
         <strong>gooey-studio</strong>
+        <button
+          className={`sidebar-toggle ${sidebar && mode === "editor" ? "on" : ""}`}
+          onClick={() => showSidebar(!sidebar)}
+          disabled={mode === "renders"}
+          aria-label="script sidebar"
+          aria-expanded={sidebar && mode === "editor"}
+          aria-controls="script-sidebar"
+          aria-keyshortcuts={"Control+\\ Meta+\\"}
+          title={mode === "renders" ? "The script sidebar (editor mode)" : `${sidebar ? "Hide" : "Show"} the script, params and look (Cmd/Ctrl-\\)`}
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" />
+            <rect x="2" y="3" width="4.5" height="10" fill={sidebar ? "currentColor" : "none"} />
+            <path d="M6.5 3v10" stroke="currentColor" />
+          </svg>
+        </button>
         <select value={current ?? ""} onChange={(e) => select(e.target.value)} aria-label="part">
           {!current && <option value="">(no parts)</option>}
           {current && !parts.some((p) => p.name === current) && <option value={current}>{current}.js</option>}
@@ -789,6 +837,7 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
             onClick={() => {
               setMode("editor");
               setTab("script");
+              showSidebar(true);
               setToast(null);
             }}
           >
@@ -799,7 +848,7 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
           </button>
         </div>
       )}
-      <main className={mode === "renders" ? "render-mode" : ""}>
+      <main className={mode === "renders" ? "render-mode" : sidebar ? "" : "no-sidebar"}>
         {mode === "renders" && (
           <section className="left">
             <RenderPanel
@@ -817,7 +866,7 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
             />
           </section>
         )}
-        <section className={`left ${mode === "renders" ? "hidden" : ""}`}>
+        <section id="script-sidebar" className={`left ${mode === "renders" || !sidebar ? "hidden" : ""}`}>
           <nav className="tabs">
             {(["script", "params", "look"] as Tab[]).map((t) => (
               <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
