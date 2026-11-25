@@ -1,9 +1,10 @@
 // The global monthly AI budget, a failsafe against surprise provider bills. `deepseek-direct`
 // bypasses the AI Gateway (and its project budget), so the studio keeps its own ledger in
 // `studio.ai_spend` (db/002_ai_spend.sql). Admission (reserveChatTurn in lib/chat-quota.ts,
-// under the quota lock) reserves STUDIO_AI_TURN_RESERVE_USD per turn so concurrent turns cannot
-// all slip under the budget; the turn then settles to its cost. A turn that never settles keeps
-// its reservation counted. Months are UTC calendar months. The budget applies to every account,
+// under the quota lock) reserves the turn's worst case (turnReserveUsd: every step at a large
+// prompt and the output cap) so concurrent turns cannot all slip under the budget; the turn
+// stops early rather than outgrow its reservation (TurnMeter.roomForAnotherCall) and then
+// settles to its cost. A turn that never settles keeps its worst case counted. Months are UTC calendar months. The budget applies to every account,
 // admins included (they only skip the per-account daily allowance).
 import "server-only";
 import { neon } from "@neondatabase/serverless";
@@ -25,9 +26,39 @@ export function budgetConfig() {
   };
 }
 
-/** Whether a new turn's reservation still fits in the month. Keep in step with reserveChatTurn's SQL. */
-export function budgetAllows(spentUsd: number, { budgetUsd, reserveUsd }: ReturnType<typeof budgetConfig>): boolean {
-  return budgetUsd > 0 && spentUsd < budgetUsd && spentUsd + reserveUsd <= budgetUsd;
+/**
+ * Whether a reservation still fits in the month (default: the smallest turn's, so "exhausted"
+ * means no model fits). Keep in step with reserveChatTurn's SQL.
+ */
+export function budgetAllows(spentUsd: number, { budgetUsd, reserveUsd }: ReturnType<typeof budgetConfig>, reservationUsd = reserveUsd): boolean {
+  return budgetUsd > 0 && spentUsd < budgetUsd && spentUsd + reservationUsd <= budgetUsd;
+}
+
+// The prompt size a turn is planned for. Bigger prompts are still metered at their real size;
+// the turn just stops sooner (roomForAnotherCall).
+const PLANNED_INPUT_TOKENS = 60_000;
+// How much a prompt may grow between calls (the previous answer plus tool results and a render).
+const PROMPT_GROWTH_TOKENS = 20_000;
+// Anthropic bills cache writes at up to 2x input; others bill them as input or not at all.
+const CACHE_WRITE_FACTOR = 2;
+
+type Tokens = { input: number; cacheRead?: number; cacheWrite?: number; output: number };
+
+function callUsd(modelId: string, t: Tokens): number {
+  const price = modelPrice(modelId);
+  const read = t.cacheRead ?? 0;
+  const write = t.cacheWrite ?? 0;
+  const fresh = Math.max(0, t.input - read - write);
+  return (fresh * price.input + read * (price.cachedInput ?? price.input) + write * price.input * CACHE_WRITE_FACTOR + t.output * price.output) / 1e6;
+}
+
+/**
+ * What a turn reserves at admission: its worst case at the planned prompt size (every step, full
+ * output), and at least STUDIO_AI_TURN_RESERVE_USD.
+ */
+export function turnReserveUsd(modelId: string, maxSteps: number, maxOutputTokens: number): number {
+  const worst = maxSteps * callUsd(modelId, { input: PLANNED_INPUT_TOKENS, output: maxOutputTokens });
+  return Math.max(budgetConfig().reserveUsd, Math.ceil(worst * 100) / 100);
 }
 
 function database() {
@@ -59,14 +90,11 @@ export async function aiSpend(): Promise<AiSpend> {
   };
 }
 
-// For a model call whose usage never arrived (stopped mid-stream): assume a large prompt and the
-// full output cap, to err high.
+// For a model call whose usage never arrived (stopped or failed mid-stream): assume a large
+// prompt and the full output cap, to err high.
 const UNKNOWN_INPUT_TOKENS = 30_000;
-// Anthropic bills cache writes at up to 2x input; others bill them as input or not at all.
-const CACHE_WRITE_FACTOR = 2;
 
 type Call = { estimateUsd: number; generationId?: string };
-type Tokens = { input?: number; cacheRead?: number; cacheWrite?: number; output?: number };
 
 /**
  * Collects a turn's model calls from streamText's callbacks. Steps run one at a time, so at most
@@ -80,6 +108,8 @@ export class TurnMeter {
   constructor(
     private modelId: string,
     private maxOutputTokens: number,
+    /** The turn's reservation; the turn stops before a call that could outgrow it. */
+    private reservedUsd = Infinity,
   ) {}
 
   start() {
@@ -101,9 +131,20 @@ export class TurnMeter {
     });
   }
 
-  /** The provider call threw or its stream ended without output: nothing to bill. */
+  /**
+   * The provider call threw. It may have been billed (an error mid-stream), so count it at its
+   * cap: erring high is the safe direction for a budget.
+   */
   fail() {
+    if (this.open) this.calls.push({ estimateUsd: this.estimate({}) });
     this.open = false;
+  }
+
+  /** Whether one more call, at a grown prompt and the full output, still fits the reservation. */
+  roomForAnotherCall(): boolean {
+    const spent = this.snapshot().reduce((sum, c) => sum + c.estimateUsd, 0);
+    const next = callUsd(this.modelId, { input: (this.lastInput ?? UNKNOWN_INPUT_TOKENS) + PROMPT_GROWTH_TOKENS, output: this.maxOutputTokens });
+    return spent + next <= this.reservedUsd;
   }
 
   /** The calls so far, plus the cut-off call (if any) at its estimate. */
@@ -112,14 +153,13 @@ export class TurnMeter {
   }
 
   /** Unknown counts err high: the larger of the last prompt and UNKNOWN_INPUT_TOKENS, the output cap. */
-  private estimate(t: Tokens): number {
-    const price = modelPrice(this.modelId);
-    const input = t.input ?? Math.max(this.lastInput ?? 0, UNKNOWN_INPUT_TOKENS);
-    const read = t.cacheRead ?? 0;
-    const write = t.cacheWrite ?? 0;
-    const fresh = Math.max(0, input - read - write);
-    const output = t.output ?? this.maxOutputTokens;
-    return (fresh * price.input + read * (price.cachedInput ?? price.input) + write * price.input * CACHE_WRITE_FACTOR + output * price.output) / 1e6;
+  private estimate(t: Partial<Tokens>): number {
+    return callUsd(this.modelId, {
+      input: t.input ?? Math.max(this.lastInput ?? 0, UNKNOWN_INPUT_TOKENS),
+      cacheRead: t.cacheRead,
+      cacheWrite: t.cacheWrite,
+      output: t.output ?? this.maxOutputTokens,
+    });
   }
 }
 

@@ -10,7 +10,7 @@
 import { after } from "next/server";
 import { errorResponse, fail, route } from "@/lib/http";
 import { reserveChatTurn } from "@/lib/chat-quota";
-import { settleTurn, TurnMeter } from "@/lib/ai-spend";
+import { settleTurn, turnReserveUsd, TurnMeter } from "@/lib/ai-spend";
 import { CHAT_LIMIT } from "@/lib/chat-quota-shared";
 import { inWorkspace } from "@/lib/workspace";
 import { convertToModelMessages, createIdGenerator, createUIMessageStreamResponse, isStepCount, streamText, toUIMessageStream, type ModelMessage } from "ai";
@@ -81,15 +81,19 @@ export const POST = route(async (req, _ctx, accountId, { admin }) => {
     return errorResponse(e);
   }
   let spendId: string | null = null;
+  // The turn's worst case, held against the monthly budget until the turn settles.
+  const reserveUsd = turnReserveUsd(modelId, MAX_STEPS, MAX_OUTPUT_TOKENS);
   try {
-    const reservation = await reserveChatTurn(accountId, modelId, { unlimited: admin });
+    const reservation = await reserveChatTurn(accountId, modelId, { unlimited: admin, reserveUsd });
     if (!reservation.accepted) {
       const q = reservation.quota;
       throw fail(429, q.budgetExhausted
         ? "The studio’s AI budget for this month is used up."
         : q.sharedLimitReached
           ? "The studio has reached its daily AI limit."
-          : "You’ve used all of your free AI turns for today.", { code: CHAT_LIMIT, quota: q });
+          : reservation.budgetTooLow
+            ? `Not enough of this month’s AI budget is left for ${modelLabel(modelId)}. Try a lighter model.`
+            : "You’ve used all of your free AI turns for today.", { code: CHAT_LIMIT, quota: q });
     }
     spendId = reservation.spendId;
     checkpoint = await store.checkpoint(part);
@@ -103,14 +107,15 @@ export const POST = route(async (req, _ctx, accountId, { admin }) => {
 
   let failure: string | undefined;
   // The turn's model calls, for the monthly AI budget; settled when the turn ends. maxRetries is
-  // 0, so every call start is one billed request.
-  const meter = new TurnMeter(modelId, MAX_OUTPUT_TOKENS);
+  // 0, so every call start is one billed request. The turn stops before a call that could take
+  // it past its reservation.
+  const meter = new TurnMeter(modelId, MAX_OUTPUT_TOKENS, reserveUsd);
   const result = streamText({
     model: resolved.model,
     system: systemPrompt(part, { vision: resolved.vision }),
     messages: modelMessages,
     tools,
-    stopWhen: isStepCount(MAX_STEPS),
+    stopWhen: [isStepCount(MAX_STEPS), () => !meter.roomForAnotherCall()],
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     maxRetries: 0,
     abortSignal: req.signal,

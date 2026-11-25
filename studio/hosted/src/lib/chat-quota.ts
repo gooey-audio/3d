@@ -62,11 +62,11 @@ export async function chatQuota(accountId: string, { unlimited = false } = {}): 
 export async function reserveChatTurn(
   accountId: string,
   model: string,
-  { unlimited = false } = {},
-): Promise<{ accepted: boolean; quota: ChatQuota; spendId: string | null }> {
+  { unlimited = false, reserveUsd }: { unlimited?: boolean; reserveUsd: number },
+): Promise<{ accepted: boolean; quota: ChatQuota; spendId: string | null; budgetTooLow: boolean }> {
   const cfg = config();
   const { sql, limit, globalLimit } = cfg;
-  const { budgetUsd, reserveUsd } = cfg.budget;
+  const { budgetUsd } = cfg.budget;
   const [, [usage]] = await sql.transaction([
     sql`SELECT pg_advisory_xact_lock(hashtext('gooey-studio.chat-quota'))`,
     sql`
@@ -109,5 +109,11 @@ export async function reserveChatTurn(
       FROM today, usage, spend, admit
     `,
   ], { isolationLevel: "ReadCommitted" });
-  return { accepted: usage.accepted, quota: quota(usage as Usage, cfg, unlimited), spendId: usage.spend_id ?? null };
+  return {
+    accepted: usage.accepted,
+    quota: quota(usage as Usage, cfg, unlimited),
+    spendId: usage.spend_id ?? null,
+    // Turned away by the budget for this model's reservation (the reported spend includes it when accepted).
+    budgetTooLow: !usage.accepted && !budgetAllows(usage.spent, cfg.budget, reserveUsd),
+  };
 }
