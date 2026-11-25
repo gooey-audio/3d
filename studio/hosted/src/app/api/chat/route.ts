@@ -5,10 +5,12 @@
 // lock (`turn.json`, lib/agent-lock.ts): 409 while another turn runs. The part is checkpointed
 // before anything changes; the checkpoint id is the response message's `metadata.checkpoint`.
 // The conversation is stored when the turn ends, also when it was stopped or failed, and the
-// lock is released after that.
+// lock is released after that. Admission also reserves part of the monthly AI budget; the
+// turn's cost replaces the reservation when it ends (lib/ai-spend.ts).
 import { after } from "next/server";
 import { errorResponse, fail, route } from "@/lib/http";
 import { reserveChatTurn } from "@/lib/chat-quota";
+import { settleTurn, TurnMeter } from "@/lib/ai-spend";
 import { CHAT_LIMIT } from "@/lib/chat-quota-shared";
 import { inWorkspace } from "@/lib/workspace";
 import { convertToModelMessages, createIdGenerator, createUIMessageStreamResponse, isStepCount, streamText, toUIMessageStream, type ModelMessage } from "ai";
@@ -21,6 +23,8 @@ import * as store from "@/lib/store";
 import { parseUnits } from "@/lib/units";
 
 export const maxDuration = 300;
+
+const MAX_OUTPUT_TOKENS = 4096;
 
 const bad = (status: number, error: string) => Response.json({ error }, { status });
 
@@ -76,28 +80,38 @@ export const POST = route(async (req, _ctx, accountId, { admin }) => {
     console.error(`[chat ${part}] could not start the turn:`, e);
     return errorResponse(e);
   }
+  let spendId: string | null = null;
   try {
-    const reservation = await reserveChatTurn(accountId, { unlimited: admin });
+    const reservation = await reserveChatTurn(accountId, modelId, { unlimited: admin });
     if (!reservation.accepted) {
-      throw fail(429, reservation.quota.sharedLimitReached
-        ? "The studio has reached its daily AI limit."
-        : "You’ve used all of your free AI turns for today.", { code: CHAT_LIMIT, quota: reservation.quota });
+      const q = reservation.quota;
+      throw fail(429, q.budgetExhausted
+        ? "The studio’s AI budget for this month is used up."
+        : q.sharedLimitReached
+          ? "The studio has reached its daily AI limit."
+          : "You’ve used all of your free AI turns for today.", { code: CHAT_LIMIT, quota: q });
     }
+    spendId = reservation.spendId;
     checkpoint = await store.checkpoint(part);
   } catch (e) {
+    // No model call ran: give back the budget reservation (settles at zero).
+    await settleTurn(spendId, new TurnMeter(modelId, MAX_OUTPUT_TOKENS), part);
     await unlock();
     throw e;
   }
   const startedAt = Date.now();
 
   let failure: string | undefined;
+  // The turn's model calls, for the monthly AI budget; settled when the turn ends. maxRetries is
+  // 0, so every call start is one billed request.
+  const meter = new TurnMeter(modelId, MAX_OUTPUT_TOKENS);
   const result = streamText({
     model: resolved.model,
     system: systemPrompt(part, { vision: resolved.vision }),
     messages: modelMessages,
     tools,
     stopWhen: isStepCount(MAX_STEPS),
-    maxOutputTokens: 4096,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
     maxRetries: 0,
     abortSignal: req.signal,
     ...(resolved.reasoning ? { reasoning: resolved.reasoning } : {}),
@@ -107,6 +121,9 @@ export const POST = route(async (req, _ctx, accountId, { admin }) => {
     onStepEnd: () => {
       if (!released) void inWorkspace(accountId, () => lock.refresh(part, turn)).catch(() => {});
     },
+    onLanguageModelCallStart: () => meter.start(),
+    onLanguageModelCallEnd: ({ usage, providerMetadata }) => meter.end(usage, providerMetadata),
+    onStepError: () => meter.fail(),
     onError: ({ error }) => {
       failure ??= errorText(modelId, error);
       console.error(`[chat ${part}] ${failure}`);
@@ -133,6 +150,8 @@ export const POST = route(async (req, _ctx, accountId, { admin }) => {
       return failure;
     },
     onEnd: ({ messages: all, isAborted, isCancelled }) => inWorkspace(accountId, async () => {
+      // Never throws; runs alongside storing the conversation so the lock is not held for it.
+      const settled = settleTurn(spendId, meter, part);
       try {
         let out = all;
         const lastMsg = out[out.length - 1];
@@ -149,6 +168,7 @@ export const POST = route(async (req, _ctx, accountId, { admin }) => {
         console.error(`[chat ${part}] could not store the conversation:`, e);
       } finally {
         await unlock();
+        await settled;
         saved();
       }
     }),

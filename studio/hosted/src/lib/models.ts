@@ -10,11 +10,19 @@
 // From the gateway's public model list (`GET https://ai-gateway.vercel.sh/v1/models`: tag
 // "vision", modalities.input includes "image"), checked 2026-11-19. DeepSeek's own API
 // (`deepseek-chat`) is text-only.
+//
+// `price`: USD per million tokens, for the monthly AI budget (lib/ai-spend.ts). These are
+// estimates that deliberately err high: gateway turns settle to the gateway's reported cost when
+// it can be looked up, so the table only matters for `deepseek-direct` (which bypasses the
+// gateway and its budget) and as a fallback. Review them when adding a model.
 import "server-only";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { gateway, type LanguageModel } from "ai";
 
 type Reasoning = "provider-default" | "none" | "minimal" | "low" | "medium" | "high";
+
+/** USD per million tokens. `cachedInput`: cache reads (default: `input`). */
+export type Price = { input: number; cachedInput?: number; output: number };
 
 type Entry = {
   id: string;
@@ -28,25 +36,27 @@ type Entry = {
   reasoning?: Reasoning;
   /** Accepts image input (also in tool results). */
   vision: boolean;
+  /** Estimated price, erring high (see above). */
+  price: Price;
 };
 
 export const DEFAULT_MODEL = "deepseek-direct";
 
 const ENTRIES: Entry[] = [
-  { id: "deepseek-direct", label: "DeepSeek Chat (direct)", vendor: "DeepSeek", via: "deepseek", model: "deepseek-chat", vision: false },
-  { id: "anthropic/claude-sonnet-5.5", label: "Claude Sonnet 5.5", vendor: "Anthropic", via: "gateway", model: "anthropic/claude-sonnet-5.5", reasoning: "low", vision: true },
-  { id: "anthropic/claude-opus-5.5", label: "Claude Opus 5.5", vendor: "Anthropic", via: "gateway", model: "anthropic/claude-opus-5.5", reasoning: "low", vision: true },
-  { id: "anthropic/claude-haiku-5.5", label: "Claude Haiku 5.5", vendor: "Anthropic", via: "gateway", model: "anthropic/claude-haiku-5.5", vision: true },
-  { id: "openai/gpt-6.2-sol", label: "GPT-6.2 Sol", vendor: "OpenAI", via: "gateway", model: "openai/gpt-6.2-sol", reasoning: "low", vision: true },
-  { id: "openai/gpt-6-luna", label: "GPT-6 Luna", vendor: "OpenAI", via: "gateway", model: "openai/gpt-6-luna", vision: true },
-  { id: "google/gemini-4-neon", label: "Gemini 4 Neon", vendor: "Google", via: "gateway", model: "google/gemini-4-neon", vision: true },
-  { id: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash", vendor: "Google", via: "gateway", model: "google/gemini-3.8-flash", vision: true },
-  { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro (gateway)", vendor: "DeepSeek", via: "gateway", model: "deepseek/deepseek-v4-pro", vision: false },
-  { id: "deepseek/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash (gateway)", vendor: "DeepSeek", via: "gateway", model: "deepseek/deepseek-v4.1-flash", vision: true },
-  { id: "moonshotai/kimi-k3.1-pro", label: "Kimi K3.1 Pro", vendor: "Moonshot", via: "gateway", model: "moonshotai/kimi-k3.1-pro", vision: true },
-  { id: "alibaba/qwen4-max", label: "Qwen 4 Max", vendor: "Alibaba", via: "gateway", model: "alibaba/qwen4-max", vision: true },
-  { id: "spacexai/grok-4.7", label: "Grok 4.7", vendor: "xAI", via: "gateway", model: "spacexai/grok-4.7", vision: true },
-  { id: "zai/glm-5.3", label: "GLM 5.3", vendor: "Z.ai", via: "gateway", model: "zai/glm-5.3", vision: false },
+  { id: "deepseek-direct", label: "DeepSeek Chat (direct)", vendor: "DeepSeek", via: "deepseek", model: "deepseek-chat", vision: false, price: { input: 0.6, cachedInput: 0.15, output: 2.2 } },
+  { id: "anthropic/claude-sonnet-5.5", label: "Claude Sonnet 5.5", vendor: "Anthropic", via: "gateway", model: "anthropic/claude-sonnet-5.5", reasoning: "low", vision: true, price: { input: 4, cachedInput: 0.4, output: 20 } },
+  { id: "anthropic/claude-opus-5.5", label: "Claude Opus 5.5", vendor: "Anthropic", via: "gateway", model: "anthropic/claude-opus-5.5", reasoning: "low", vision: true, price: { input: 15, cachedInput: 1.5, output: 75 } },
+  { id: "anthropic/claude-haiku-5.5", label: "Claude Haiku 5.5", vendor: "Anthropic", via: "gateway", model: "anthropic/claude-haiku-5.5", vision: true, price: { input: 2, cachedInput: 0.2, output: 10 } },
+  { id: "openai/gpt-6.2-sol", label: "GPT-6.2 Sol", vendor: "OpenAI", via: "gateway", model: "openai/gpt-6.2-sol", reasoning: "low", vision: true, price: { input: 5, cachedInput: 0.5, output: 40 } },
+  { id: "openai/gpt-6-luna", label: "GPT-6 Luna", vendor: "OpenAI", via: "gateway", model: "openai/gpt-6-luna", vision: true, price: { input: 1, cachedInput: 0.1, output: 8 } },
+  { id: "google/gemini-4-neon", label: "Gemini 4 Neon", vendor: "Google", via: "gateway", model: "google/gemini-4-neon", vision: true, price: { input: 4, cachedInput: 0.4, output: 24 } },
+  { id: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash", vendor: "Google", via: "gateway", model: "google/gemini-3.8-flash", vision: true, price: { input: 0.6, cachedInput: 0.06, output: 4 } },
+  { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro (gateway)", vendor: "DeepSeek", via: "gateway", model: "deepseek/deepseek-v4-pro", vision: false, price: { input: 2, cachedInput: 0.2, output: 8 } },
+  { id: "deepseek/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash (gateway)", vendor: "DeepSeek", via: "gateway", model: "deepseek/deepseek-v4.1-flash", vision: true, price: { input: 0.5, cachedInput: 0.05, output: 2 } },
+  { id: "moonshotai/kimi-k3.1-pro", label: "Kimi K3.1 Pro", vendor: "Moonshot", via: "gateway", model: "moonshotai/kimi-k3.1-pro", vision: true, price: { input: 2, cachedInput: 0.2, output: 10 } },
+  { id: "alibaba/qwen4-max", label: "Qwen 4 Max", vendor: "Alibaba", via: "gateway", model: "alibaba/qwen4-max", vision: true, price: { input: 3, cachedInput: 0.3, output: 15 } },
+  { id: "spacexai/grok-4.7", label: "Grok 4.7", vendor: "xAI", via: "gateway", model: "spacexai/grok-4.7", vision: true, price: { input: 5, cachedInput: 0.5, output: 25 } },
+  { id: "zai/glm-5.3", label: "GLM 5.3", vendor: "Z.ai", via: "gateway", model: "zai/glm-5.3", vision: false, price: { input: 2, cachedInput: 0.2, output: 8 } },
 ];
 
 const BY_ID = new Map(ENTRIES.map((e) => [e.id, e]));
@@ -77,6 +87,11 @@ export function modelLabel(id: string): string {
 /** Whether the model accepts images (false for unknown ids). */
 export function modelVision(id: string): boolean {
   return BY_ID.get(id)?.vision ?? false;
+}
+
+/** The model's estimated price (unknown ids: the most expensive entry, to err high). */
+export function modelPrice(id: string): Price {
+  return BY_ID.get(id)?.price ?? ENTRIES.reduce((a, e) => (e.price.output > a.output ? e.price : a), ENTRIES[0].price);
 }
 
 let deepseek: ReturnType<typeof createDeepSeek> | null = null;
