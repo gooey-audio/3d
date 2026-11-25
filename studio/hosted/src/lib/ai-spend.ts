@@ -3,7 +3,8 @@
 // `studio.ai_spend` (db/002_ai_spend.sql). Admission (reserveChatTurn in lib/chat-quota.ts,
 // under the quota lock) reserves STUDIO_AI_TURN_RESERVE_USD per turn so concurrent turns cannot
 // all slip under the budget; the turn then settles to its cost. A turn that never settles keeps
-// its reservation counted. Months are UTC calendar months. The budget applies to every account.
+// its reservation counted. Months are UTC calendar months. The budget applies to every account,
+// admins included (they only skip the per-account daily allowance).
 import "server-only";
 import { neon } from "@neondatabase/serverless";
 import { gateway, type LanguageModelUsage, type ProviderMetadata } from "ai";
