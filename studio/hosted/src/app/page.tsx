@@ -19,6 +19,7 @@ async function AccountStudio() {
   return (
     <Studio
       accountEmail={account.user.email}
+      isAdmin={account.admin}
       uploadPrefix={`${workspacePrefix(account.user.id)}uploads/incoming/`}
       interestUrl={interestEmail ? `mailto:${encodeURIComponent(interestEmail).replace("%40", "@")}?subject=Gooey%20Studio%20AI%20access` : undefined}
     />

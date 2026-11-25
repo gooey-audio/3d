@@ -27,6 +27,7 @@ Neon Postgres tracks the daily AI allowance. See [CONTRACT.md](CONTRACT.md) for 
 | `NEON_AUTH_COOKIE_SECRET` | At least 32 characters. Generate with `openssl rand -base64 32`. |
 | `DATABASE_URL` | Server-only Neon Postgres connection string for AI usage |
 | `STUDIO_INVITED_EMAILS` | Comma-separated email addresses of trusted beta users. Omit to deny all beta access. |
+| `STUDIO_ADMIN_EMAILS` | Comma-separated admin email addresses (e.g. the owner, `brian@brianhurlow.com`). Admins are invited implicitly and have no personal AI allowance. |
 | `STUDIO_AI_DAILY_TURNS` | Free AI turns per account per UTC day (default 5) |
 | `STUDIO_AI_GLOBAL_DAILY_TURNS` | Total AI turns across all accounts per UTC day (default 40) |
 | `STUDIO_AI_INTEREST_EMAIL` | Destination for the email link shown when the daily allowance runs out |
@@ -43,7 +44,7 @@ Neon Postgres tracks the daily AI allowance. See [CONTRACT.md](CONTRACT.md) for 
 3. Set the environment variables for the deployment. Invite only people you trust to run code in the CAD environment. The current CAD worker executes Replicad scripts as JavaScript in a shared process. Isolate untrusted script execution from other jobs, credentials, the filesystem, and network access before enabling public signup.
 4. Sign in from two invited email addresses. Create a part with the same name in both accounts and check that scripts, uploads, chat, and renders are private to each account. Try an uninvited address and verify that it cannot enter the Studio. Set a low allowance in staging and verify that concurrent AI requests cannot exceed it.
 
-An AI turn starts when the server admits a message or retry. It counts even if stopped or if a provider call fails. Allowances reset at midnight UTC. Set either limit to zero to pause AI chat. A limit on turns bounds model requests and each turn has a step and output cap. Provider spend also depends on the model and input size. Set a provider spending cap where available.
+An AI turn starts when the server admits a message or retry. It counts even if stopped or if a provider call fails. Allowances reset at midnight UTC. Set either limit to zero to pause AI chat. Admins (`STUDIO_ADMIN_EMAILS`) skip the per-account limit, but their turns are recorded and count toward the global one, so a zero global limit pauses them too. A limit on turns bounds model requests and each turn has a step and output cap. Provider spend also depends on the model and input size. Set a provider spending cap where available.
 
 Existing files under the old shared `3d-studio/parts/`, `uploads/`, and `renders/` prefixes need an explicit owner before migration. To assign them, copy the owned files to the corresponding paths under `3d-studio/accounts/<sha256-of-Neon-user-id>/`. Omit old turn locks and staging uploads. Leave the shared prefix inaccessible to the hosted app.
 

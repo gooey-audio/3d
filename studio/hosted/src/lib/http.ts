@@ -52,13 +52,17 @@ export function publicRoute<C>(fn: Handler<C>) {
   };
 }
 
-export function route<C>(fn: (req: NextRequest, ctx: C, accountId: string) => Promise<Response>) {
+/** The signed-in account, for routes that need more than its id. */
+export type RouteAccount = { email: string; admin: boolean };
+
+export function route<C>(fn: (req: NextRequest, ctx: C, accountId: string, account: RouteAccount) => Promise<Response>) {
   return publicRoute(async (req, ctx: C) => {
     const account = await studioAccount();
     if (account.status === "unavailable") throw fail(503, "Sign-in is temporarily unavailable.");
     if (account.status === "denied") throw fail(403, "This account does not have beta access.");
     if (account.status !== "ok") throw fail(401, "Sign in to use the studio.");
-    return inWorkspace(account.user.id, () => fn(req, ctx, account.user.id));
+    const { id, email } = account.user;
+    return inWorkspace(id, () => fn(req, ctx, id, { email, admin: account.admin }));
   });
 }
 

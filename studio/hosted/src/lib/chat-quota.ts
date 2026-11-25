@@ -23,16 +23,15 @@ function config() {
 
 type Usage = { personal: number; total: number; reset_at: string };
 
-function quota(usage: Usage, limit: number, globalLimit: number): ChatQuota {
-  return {
-    limit,
-    remaining: Math.max(0, limit - usage.personal),
-    sharedLimitReached: usage.total >= globalLimit,
-    resetAt: new Date(usage.reset_at).toISOString(),
-  };
+function quota(usage: Usage, limit: number, globalLimit: number, unlimited: boolean): ChatQuota {
+  const shared = { sharedLimitReached: usage.total >= globalLimit, resetAt: new Date(usage.reset_at).toISOString() };
+  return unlimited
+    ? { ...shared, unlimited, limit: null, remaining: null }
+    : { ...shared, unlimited, limit, remaining: Math.max(0, limit - usage.personal) };
 }
 
-export async function chatQuota(accountId: string): Promise<ChatQuota> {
+/** `unlimited` skips the personal allowance; the turns still count toward the shared one. */
+export async function chatQuota(accountId: string, { unlimited = false } = {}): Promise<ChatQuota> {
   const { sql, limit, globalLimit } = config();
   const [usage] = await sql`
     SELECT count(*)::int AS total,
@@ -41,11 +40,11 @@ export async function chatQuota(accountId: string): Promise<ChatQuota> {
     FROM studio.chat_turns
     WHERE day = (now() AT TIME ZONE 'UTC')::date
   `;
-  return quota(usage as Usage, limit, globalLimit);
+  return quota(usage as Usage, limit, globalLimit, unlimited);
 }
 
 /** Hold the lock until commit, then count and insert using a fresh READ COMMITTED snapshot. */
-export async function reserveChatTurn(accountId: string): Promise<{ accepted: boolean; quota: ChatQuota }> {
+export async function reserveChatTurn(accountId: string, { unlimited = false } = {}): Promise<{ accepted: boolean; quota: ChatQuota }> {
   const { sql, limit, globalLimit } = config();
   const [, [usage]] = await sql.transaction([
     sql`SELECT pg_advisory_xact_lock(hashtext('gooey-studio.chat-quota'))`,
@@ -60,7 +59,7 @@ export async function reserveChatTurn(accountId: string): Promise<{ accepted: bo
       ), reserved AS (
         INSERT INTO studio.chat_turns (day, account_id)
         SELECT day, ${accountId} FROM today, usage
-        WHERE personal < ${limit} AND total < ${globalLimit}
+        WHERE (${unlimited}::boolean OR personal < ${limit}) AND total < ${globalLimit}
         RETURNING 1
       )
       SELECT personal + (SELECT count(*)::int FROM reserved) AS personal,
@@ -70,5 +69,5 @@ export async function reserveChatTurn(accountId: string): Promise<{ accepted: bo
       FROM today, usage
     `,
   ], { isolationLevel: "ReadCommitted" });
-  return { accepted: usage.accepted, quota: quota(usage as Usage, limit, globalLimit) };
+  return { accepted: usage.accepted, quota: quota(usage as Usage, limit, globalLimit, unlimited) };
 }

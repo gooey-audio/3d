@@ -11,10 +11,20 @@ export function getAuth() {
   return auth ??= createNeonAuth({ baseUrl: baseUrl.replace(/\/+$/, ""), cookies: { secret } });
 }
 
-export function invited(email: string): boolean {
+function listed(name: string, email: string): boolean {
   const normalized = email.trim().toLowerCase();
-  return !!normalized && (process.env.STUDIO_INVITED_EMAILS ?? "").split(",")
+  return !!normalized && (process.env[name] ?? "").split(",")
     .some((value) => value.trim().toLowerCase() === normalized);
+}
+
+/** Admins have no personal AI allowance (the shared one still applies). */
+export function isAdmin(email: string): boolean {
+  return listed("STUDIO_ADMIN_EMAILS", email);
+}
+
+// Admins are invited implicitly, so the email-code gate and the session check agree.
+export function invited(email: string): boolean {
+  return listed("STUDIO_INVITED_EMAILS", email) || isAdmin(email);
 }
 
 export function requestOrigin(incoming: Pick<Headers, "get">): string | undefined {
@@ -51,5 +61,5 @@ export async function studioAccount({ page = false } = {}) {
     return { status: "signed-out" } as const;
   }
   if (!data.user.emailVerified || !invited(data.user.email)) return { status: "denied" } as const;
-  return { status: "ok", user: data.user } as const;
+  return { status: "ok", user: data.user, admin: isAdmin(data.user.email) } as const;
 }

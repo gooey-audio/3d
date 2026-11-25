@@ -68,7 +68,7 @@ function compose(a: Record<string, unknown>, b: Record<string, unknown>): Record
   return out;
 }
 
-export function Studio({ accountEmail, uploadPrefix, interestUrl }: { accountEmail: string; uploadPrefix: string; interestUrl?: string }) {
+export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUrl }: { accountEmail: string; isAdmin?: boolean; uploadPrefix: string; interestUrl?: string }) {
   const [parts, setParts] = useState<PartInfo[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("editor");
@@ -752,7 +752,7 @@ export function Studio({ accountEmail, uploadPrefix, interestUrl }: { accountEma
             delete
           </button>
         )}
-        <span className="muted small account-email" title={accountEmail}>{accountEmail}</span>
+        <span className="muted small account-email" title={isAdmin ? `${accountEmail} (admin)` : accountEmail}>{accountEmail}</span>
         <button className="link muted" onClick={signOut}>
           sign out
         </button>
