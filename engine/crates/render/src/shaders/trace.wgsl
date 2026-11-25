@@ -59,6 +59,9 @@ struct Mat {
     tex: vec4<f32>,         // texture kind (0 = none), scale mm, strength, axis code
     fig: vec4<f32>,         // wood figure: cut (0 none, 1 flat, 2 quarter), log mm, ribbon, contrast
     fig2: vec4<f32>,        // ring mm, ribbon mm, taper, -
+    sp0: vec4<f32>,         // paint splatter: main colour, seed
+    sp1: vec4<f32>,         // accent colour, accent share
+    sp2: vec4<f32>,         // cell mm, density, face axis (+-1..3), enabled
 }
 
 @group(0) @binding(0) var<uniform> P: Params;
@@ -478,6 +481,111 @@ fn apply_texture(m: Mat, inst: Inst, i: u32, lp: vec3<f32>, ns: vec3<f32>) -> Te
     return out;
 }
 
+// ---------------------------------------------------------------- paint splatter
+// Manifest material `splatter` (scene::Splatter). Impacts sit on a grid of `cell` mm over the
+// face, at most one per cell; each is a fingered blob thrown one way, with satellites,
+// teardrop droplets (heads away from the impact) and mist. Returns (signed distance in mm,
+// positive on paint; colour index). The speakers repo's viewer.js and guide/render3d.py
+// mirror this hash and every constant: change them together.
+
+fn sp_hash(i: i32, j: i32, k: u32, seed: u32) -> f32 {
+    var x = pcg(bitcast<u32>(i));
+    x = pcg(x ^ bitcast<u32>(j));
+    x = pcg(x ^ k);
+    x = pcg(x ^ seed);
+    return f32(x >> 8u) * (1.0 / 16777216.0);
+}
+
+fn sp_turn(a: f32) -> f32 {
+    return atan2(sin(a), cos(a));
+}
+
+fn sp_ray(dir: f32) -> vec2<f32> {
+    return vec2<f32>(cos(dir), sin(dir));
+}
+
+// Teardrop of head radius r, st times as long, head toward dir; q relative to its centre.
+fn sp_drop(q: vec2<f32>, r: f32, st: f32, dir: f32) -> f32 {
+    let half = r * st;
+    let cs = sp_ray(dir);
+    let u = dot(q, cs) / half;
+    let v = -q.x * cs.y + q.y * cs.x;
+    if (abs(u) >= 1.0) {
+        return -length(vec2<f32>((abs(u) - 1.0) * half, v));
+    }
+    return r * sqrt(1.0 - u * u) * (0.25 + 0.75 * pow((1.0 + u) * 0.5, 0.7)) - abs(v);
+}
+
+fn splatter(p: vec2<f32>, seed: u32, cell: f32, density: f32, accent: f32) -> vec2<f32> {
+    var best = -1e9;
+    var col = 0.0;
+    let c0 = floor(p / cell);
+    for (var dj = -1; dj <= 1; dj++) {
+        for (var di = -1; di <= 1; di++) {
+            let i = i32(c0.x) + di;
+            let j = i32(c0.y) + dj;
+            if (sp_hash(i, j, 0u, seed) >= density) {
+                continue;
+            }
+            let ctr = (vec2<f32>(f32(i), f32(j)) + 0.15
+                + 0.7 * vec2<f32>(sp_hash(i, j, 1u, seed), sp_hash(i, j, 2u, seed))) * cell;
+            let r = cell * (0.055 + 0.075 * sp_hash(i, j, 3u, seed));
+            let q = p - ctr;
+            if (length(q) > 7.0 * r + 4.0) {
+                continue;
+            }
+            let dir = TAU * sp_hash(i, j, 4u, seed);
+            let st = 1.0 + 0.5 * sp_hash(i, j, 5u, seed);
+            let cs = sp_ray(dir);
+            let pu = dot(q, cs) / st;
+            let pv = -q.x * cs.y + q.y * cs.x;
+            let a = atan2(pv, pu) + dir;
+            // Main blob: low-order wobble plus ten fingers, most thrown toward dir.
+            var k = 1.0 + 0.06 * (0.5 + sp_hash(i, j, 7u, seed)) * cos(2.0 * a + TAU * sp_hash(i, j, 10u, seed))
+                + 0.04 * (0.5 + sp_hash(i, j, 8u, seed)) * cos(3.0 * a + TAU * sp_hash(i, j, 11u, seed))
+                + 0.024 * (0.5 + sp_hash(i, j, 9u, seed)) * cos(5.0 * a + TAU * sp_hash(i, j, 12u, seed));
+            for (var f = 0u; f < 10u; f++) {
+                let b = 13u + 4u * f;
+                var at = TAU * sp_hash(i, j, b + 1u, seed);
+                if (sp_hash(i, j, b, seed) < 0.65) {
+                    at = dir + (sp_hash(i, j, b + 1u, seed) - 0.5) * 2.2;
+                }
+                let len = (0.15 + 0.55 * sp_hash(i, j, b + 2u, seed)) * (1.2 + 0.5 * cos(at - dir));
+                let w = 0.035 + 0.05 * sp_hash(i, j, b + 3u, seed);
+                let dd = abs(sp_turn(a - at)) / w;
+                if (dd < 1.0) {
+                    k += len * pow(1.0 - dd, 1.6);
+                }
+            }
+            var d = r * k - length(vec2<f32>(pu, pv));
+            for (var n = 0u; n < 3u; n++) {
+                let b = 60u + 3u * n;
+                let sa = dir + (sp_hash(i, j, b, seed) - 0.5) * 1.6;
+                let c = r * (1.4 + 1.2 * sp_hash(i, j, b + 1u, seed)) * sp_ray(sa);
+                d = max(d, r * (0.1 + 0.15 * sp_hash(i, j, b + 2u, seed)) - length(q - c));
+            }
+            for (var n = 0u; n < 8u; n++) {
+                let b = 70u + 4u * n;
+                let da = dir + (sp_hash(i, j, b, seed) - 0.5) * 2.6;
+                let fr = sp_hash(i, j, b + 1u, seed);
+                let c = r * (1.8 + 3.5 * fr) * sp_ray(da);
+                let head = (0.5 + 1.6 * (1.0 - fr) * sp_hash(i, j, b + 2u, seed)) * min(1.0, r / 10.0);
+                d = max(d, sp_drop(q - c, head, 1.8 + 2.4 * sp_hash(i, j, b + 3u, seed), da));
+            }
+            for (var n = 0u; n < 8u; n++) {
+                let b = 110u + 3u * n;
+                let c = r * (1.3 + 5.0 * pow(sp_hash(i, j, b, seed), 1.5)) * sp_ray(TAU * sp_hash(i, j, b + 1u, seed));
+                d = max(d, 0.3 + 0.7 * sp_hash(i, j, b + 2u, seed) - length(q - c));
+            }
+            if (d > best) {
+                best = d;
+                col = select(0.0, 1.0, sp_hash(i, j, 6u, seed) < accent);
+            }
+        }
+    }
+    return vec2<f32>(best, col);
+}
+
 // ---------------------------------------------------------------- growth-ring wood
 // The part is a plank cut from a log whose axis runs along the grain (inst.g); rings are
 // cylinders about it with uneven spacing and a wandering course. Flat cuts put the pith
@@ -880,7 +988,7 @@ fn trace(o_in: vec3<f32>, d_in: vec3<f32>) -> PathOut {
             let w = 1.0 - h.u - h.v;
             ng = normalize(cross(tris[3u * i + 1u].xyz, tris[3u * i + 2u].xyz));
             ns = normalize(attrs[6u * i].xyz * w + attrs[6u * i + 1u].xyz * h.u + attrs[6u * i + 2u].xyz * h.v);
-            if (m.b.w > 0.5 || m.tex.x > 0.5) {
+            if (m.b.w > 0.5 || m.tex.x > 0.5 || m.sp2.w > 0.5) {
                 let l0 = attrs[6u * i + 3u].xyz;
                 let l1 = attrs[6u * i + 4u].xyz;
                 let l2 = attrs[6u * i + 5u].xyz;
@@ -907,6 +1015,22 @@ fn trace(o_in: vec3<f32>, d_in: vec3<f32>) -> PathOut {
                     let tx = apply_texture(m, inst, i, lp, ns);
                     ns = tx.n;
                     s.base = clamp(s.base * tx.tint, vec3<f32>(0.0), vec3<f32>(1.0));
+                }
+                if (m.sp2.w > 0.5) {
+                    // Paint on the faces whose local normal runs along the splatter axis.
+                    let ax = i32(abs(m.sp2.z) + 0.5) - 1;
+                    let ln = normalize(cross(l1 - l0, l2 - l0));
+                    if (ln[ax] * sign(m.sp2.z) > 0.5) {
+                        var uv = lp.xy;
+                        if (ax == 0) {
+                            uv = lp.yz;
+                        } else if (ax == 1) {
+                            uv = lp.xz;
+                        }
+                        let sp = splatter(uv, u32(m.sp0.w + 0.5), m.sp2.x, m.sp2.y, m.sp1.w);
+                        let cov = smoothstep(-0.06, 0.06, sp.x);
+                        s.base = mix(s.base, select(m.sp0.xyz, m.sp1.xyz, sp.y > 0.5), cov);
+                    }
                 }
             }
             // See-through coverage (grille cloth): continue untouched.

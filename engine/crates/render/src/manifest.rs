@@ -36,6 +36,8 @@ pub struct ManifestMaterial {
     pub metalness: Option<f64>,
     pub opacity: Option<f64>,
     pub grain: Option<Value>,
+    /// Paint splatter over one face direction (see scene::Splatter).
+    pub splatter: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +161,7 @@ pub fn load_value(config: &Value, path: &Path, sel: &Selection) -> Result<Assemb
                 metalness: m.get("metalness").and_then(Value::as_f64),
                 opacity: m.get("opacity").and_then(Value::as_f64),
                 grain: m.get("grain").cloned(),
+                splatter: m.get("splatter").cloned(),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

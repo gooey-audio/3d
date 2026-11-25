@@ -438,7 +438,7 @@ fn floor_id(i: usize) -> String {
 /// Room materials, appended after the manifest's so geometry can refer to them by id.
 pub fn materials(room: &Room, lib: &Library) -> Result<Vec<Material>, String> {
     let resolve = |id: &str, s: &Surface| {
-        lib.material(id, s.finish(), s.color(), None, None)
+        lib.material(id, s.finish(), s.color(), None, None, None)
             .map_err(|e| format!("environment {id}: {e}"))
     };
     let mut out = Vec::new();

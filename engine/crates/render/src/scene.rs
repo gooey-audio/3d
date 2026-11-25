@@ -273,6 +273,8 @@ pub struct Material {
     pub texture: Option<Texture>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub figure: Option<Figure>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub splatter: Option<Splatter>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -281,6 +283,81 @@ pub struct Grain {
     pub edge_color: [f32; 3],
     pub period_mm: f32,
     pub ply_mm: f32,
+}
+
+/// Paint splatter (manifest material `splatter`), drawn over the faces whose local normal
+/// points along `normal`. Impacts sit on a `cell_mm` grid over the face's other two local axes
+/// (x/y/z order), at most one per cell; each is a fingered blob thrown one way with satellites,
+/// teardrop droplets and mist (see `splatter()` in the shader). The speakers repo's viewer and
+/// guide renderer mirror the same hash and constants.
+#[derive(Debug, Clone, Serialize)]
+pub struct Splatter {
+    pub seed: u32,
+    /// Main and accent paint, linear.
+    pub colors: [[f32; 3]; 2],
+    /// Share of impacts in the accent colour, 0..1.
+    pub accent: f32,
+    /// Impact grid pitch; at most one impact per cell.
+    pub cell_mm: f32,
+    /// Chance that a cell holds an impact, 0..1.
+    pub density: f32,
+    /// Face axis: 1..3 for +x/+y/+z, negative for -x/-y/-z.
+    pub axis: i32,
+}
+
+impl Splatter {
+    fn parse(v: &Value, id: &str) -> Result<Splatter, String> {
+        let err = |what: &str| format!("material {id}: splatter {what}");
+        let num = |key: &str, default: f64| v.get(key).map_or(Some(default), Value::as_f64);
+        let colors = v
+            .get("colors")
+            .and_then(Value::as_array)
+            .filter(|c| (1..=2).contains(&c.len()))
+            .ok_or_else(|| err("needs one or two colors"))?
+            .iter()
+            .map(|c| {
+                c.as_str()
+                    .ok_or_else(|| err("colors must be hex strings"))
+                    .and_then(linear_hex)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let seed = v.get("seed").and_then(Value::as_u64).filter(|s| *s < 1 << 24);
+        let normal: Vec<f64> = match v.get("normal") {
+            None => vec![0.0, 0.0, 1.0],
+            Some(n) => n
+                .as_array()
+                .ok_or_else(|| err("normal must be [x, y, z]"))?
+                .iter()
+                .filter_map(Value::as_f64)
+                .collect(),
+        };
+        let unit_axis = normal.len() == 3 && normal.iter().map(|n| n.abs()).sum::<f64>() == 1.0;
+        let k = (0..3)
+            .find(|&i| unit_axis && normal[i].abs() == 1.0)
+            .ok_or_else(|| err("normal must be a signed unit axis"))?;
+        let (accent, cell, density) = match (num("accent", 0.0), num("cell_mm", 90.0), num("density", 0.6)) {
+            (Some(a), Some(c), Some(d)) if (0.0..=1.0).contains(&a) && c > 0.0 && (0.0..=1.0).contains(&d) => (a, c, d),
+            _ => return Err(err("needs accent and density 0..1 and cell_mm > 0")),
+        };
+        Ok(Splatter {
+            seed: seed.ok_or_else(|| err("needs an integer seed below 2^24"))? as u32,
+            colors: [colors[0], *colors.last().unwrap()],
+            accent: accent as f32,
+            cell_mm: cell as f32,
+            density: density as f32,
+            axis: (k as i32 + 1) * normal[k].signum() as i32,
+        })
+    }
+
+    /// GPU encoding: [main rgb, seed], [accent rgb, accent share], [cell mm, density, axis, 1].
+    pub fn gpu(&self) -> [[f32; 4]; 3] {
+        let [a, b] = self.colors;
+        [
+            [a[0], a[1], a[2], self.seed as f32],
+            [b[0], b[1], b[2], self.accent],
+            [self.cell_mm, self.density, self.axis as f32, 1.0],
+        ]
+    }
 }
 
 pub fn parse_hex(c: &str) -> Result<[f32; 3], String> {
@@ -364,6 +441,7 @@ pub fn resolve_material(m: &manifest::ManifestMaterial, o: Option<&MaterialOverr
         grain,
         texture: o.texture,
         figure: o.figure,
+        splatter: m.splatter.as_ref().map(|v| Splatter::parse(v, &m.id)).transpose()?,
     })
 }
 
@@ -453,7 +531,14 @@ pub fn resolve_assembly(
             };
             match &m.finish {
                 Some(f) => library
-                    .material(&m.id, f, m.color.as_deref(), m.grain.as_ref(), look)
+                    .material(
+                        &m.id,
+                        f,
+                        m.color.as_deref(),
+                        m.grain.as_ref(),
+                        m.splatter.as_ref(),
+                        look,
+                    )
                     .map_err(|e| format!("material {}: {e}", m.id)),
                 None => resolve_material(m, look),
             }
@@ -508,6 +593,9 @@ pub struct GpuMaterial {
     pub tex: [f32; 4],  // texture kind (0 = none), scale mm, strength, axis code
     pub fig: [f32; 4],  // wood figure: cut (0 = none), log mm, ribbon, contrast
     pub fig2: [f32; 4], // ring mm, ribbon mm, taper, -
+    pub sp0: [f32; 4],  // splatter: main colour, seed
+    pub sp1: [f32; 4],  // splatter: accent colour, accent share
+    pub sp2: [f32; 4],  // splatter: cell mm, density, face axis (+-1..3), enabled
 }
 
 pub struct Geometry {
@@ -537,6 +625,7 @@ pub fn gpu_material(m: &Material) -> GpuMaterial {
         None => (m.color, m.color, 12.0, 2.0),
     };
     let fig = m.figure.map_or([[0.0; 4]; 2], |f| f.gpu());
+    let sp = m.splatter.as_ref().map_or([[0.0; 4]; 3], Splatter::gpu);
     GpuMaterial {
         base: [m.color[0], m.color[1], m.color[2], m.roughness],
         a: [m.metalness, m.clearcoat, m.clearcoat_roughness, m.transmission],
@@ -546,6 +635,9 @@ pub fn gpu_material(m: &Material) -> GpuMaterial {
         tex: m.texture.map_or([0.0; 4], |t| t.gpu()),
         fig: fig[0],
         fig2: fig[1],
+        sp0: sp[0],
+        sp1: sp[1],
+        sp2: sp[2],
     }
 }
 
