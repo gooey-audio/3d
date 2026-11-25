@@ -12,6 +12,7 @@ Neon Postgres tracks the daily AI allowance and the monthly AI spend. See [CONTR
 ## Layout
 
 - `src/app/login/` and `src/app/api/auth/`: Neon Auth Google sign-in and email codes for invited accounts. All Studio API routes verify the session before accessing account data.
+- `src/app/parts/`: the parts screen, a grid of the account's parts with thumbnails (open, create, delete).
 - `src/app/api/`: parts (script, build, mesh, scene, STEP, revert, render), uploads, renders, and
   the agent chat (`api/chat`).
 - `src/components/studio/`: the UI (editor, params and look panels, viewer, render mode).
@@ -62,6 +63,14 @@ Neon's shared Google credentials can be used for local testing. To use your own 
 3. Add each tester's Google account email to `STUDIO_INVITED_EMAILS`. If Google's OAuth consent screen is in testing mode, add those accounts to its test users too.
 
 Neon verifies Google's callback and returns the browser to the Studio at `/api/auth/google/callback`. The Studio checks the resulting session's verified email against the beta invite list before granting access. See [Neon's OAuth setup guide](https://neon.com/docs/auth/guides/setup-oauth).
+
+## Parts screen
+
+`/parts` (the header's Parts link) lists the account's parts as cards: a thumbnail of the last
+good mesh, when the part last changed and its size. A card opens the part in the studio
+(`/?part=<name>`); parts are deleted here, and New part works here too. Thumbnails share one offscreen WebGL
+renderer (browsers cap live contexts at about 16), are drawn as cards scroll into view, and are
+cached in the page per part and mesh version (`mesh_ms` in `GET /api/parts`).
 
 ## Units
 

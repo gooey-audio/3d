@@ -338,7 +338,8 @@ export async function openJobImage(id: string): Promise<BlobStream | null> {
   return open(key(`renders/${id}.png`));
 }
 
-export type PartInfo = { name: string; mesh: boolean; updated_ms: number };
+/** `mesh_ms`: when mesh.stl was written (0 without one), a version for cached thumbnails. */
+export type PartInfo = { name: string; mesh: boolean; updated_ms: number; mesh_ms: number };
 
 /** Parts with whether they have a mesh, from one listing. */
 export async function listPartsInfo(): Promise<PartInfo[]> {
@@ -351,8 +352,10 @@ export async function listPartsInfo(): Promise<PartInfo[]> {
     if (!m) continue;
     if (!files.has(m[1])) files.set(m[1], new Set());
     files.get(m[1])!.add(m[2]);
-    const p = parts.get(m[1]) ?? { name: m[1], mesh: false, updated_ms: 0 };
-    p.updated_ms = Math.max(p.updated_ms, new Date(b.uploadedAt).getTime());
+    const p = parts.get(m[1]) ?? { name: m[1], mesh: false, updated_ms: 0, mesh_ms: 0 };
+    const at = new Date(b.uploadedAt).getTime();
+    p.updated_ms = Math.max(p.updated_ms, at);
+    if (m[2] === "mesh.stl") p.mesh_ms = at;
     parts.set(m[1], p);
   }
   return [...parts.values()]

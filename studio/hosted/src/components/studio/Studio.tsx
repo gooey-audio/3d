@@ -7,7 +7,9 @@
 // only the newest one's result is applied. Scene patches are applied to the preview at once
 // and sent one at a time (patches made meanwhile are merged into the next request), so
 // concurrent read-modify-writes on the server cannot lose a change.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { authClient } from "@/lib/auth-client";
 import { patchScene as applyPatch, resolve, viewDirection, type Scene } from "@/lib/scene";
@@ -70,6 +72,7 @@ function compose(a: Record<string, unknown>, b: Record<string, unknown>): Record
 }
 
 export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUrl }: { accountEmail: string; isAdmin?: boolean; uploadPrefix: string; interestUrl?: string }) {
+  const router = useRouter();
   const [parts, setParts] = useState<PartInfo[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("editor");
@@ -603,20 +606,14 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
     }
   };
 
-  const deletePart = async () => {
-    if (!current || !confirm(`Delete ${current}.js, its scene, builds and conversation?`)) return;
-    try {
-      await api.deletePart(current);
-      select(null);
-      setScene(null);
-      setBuild(null);
-      setSel([]);
-      viewer.current?.clear();
-      const ps = await loadParts();
-      if (!ps.length) setDoc({ key: "none", text: "" });
-    } catch (e) {
-      setBanner({ text: errorMessage(e) });
-    }
+  /** To the parts screen (where parts are deleted), saving a pending edit first. */
+  const openParts = async (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; // a new tab or window
+    if (!saved.current || draft.current === saved.current.text) return;
+    e.preventDefault();
+    await save();
+    // A failed save stays here with its banner, so the edit is not lost.
+    if (saved.current && draft.current === saved.current.text) router.push("/parts");
   };
 
   // --- render mode -----------------------------------------------------------------------
@@ -735,6 +732,9 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
             </option>
           ))}
         </select>
+        <Link className="button" href="/parts" onClick={openParts} title="All parts, with previews">
+          Parts
+        </Link>
         <nav className="modes">
           <button className={mode === "editor" ? "on" : ""} onClick={() => setMode("editor")}>
             Editor
@@ -794,11 +794,6 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
           <a className="button" href={api.stlDownloadUrl(current)} download={`${current}.stl`} title="The last good mesh">
             STL
           </a>
-        )}
-        {current && (
-          <button className="link muted" onClick={deletePart} title="Delete this part">
-            delete
-          </button>
         )}
         <span className="muted small account-email" title={isAdmin ? `${accountEmail} (admin)` : accountEmail}>{accountEmail}</span>
         <button className="link muted" onClick={signOut}>
