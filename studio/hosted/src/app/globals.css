@@ -258,6 +258,10 @@ header button.link.muted:hover { color: var(--text); }
 
 /* render mode: settings | preview | renders */
 main.render-mode { grid-template-columns: 340px 1fr 330px; }
+/* the script sidebar hidden (Cmd/Ctrl-\): the preview takes its column */
+main.no-sidebar { grid-template-columns: 1fr 340px; }
+header .sidebar-toggle { display: grid; place-items: center; padding: 3px 6px; color: var(--muted); }
+header .sidebar-toggle.on { color: #fff; }
 .ok { color: var(--good); }
 .render-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .render-scroll { flex: 1; overflow: auto; padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 7px; }
