@@ -7,12 +7,14 @@
 // only the newest one's result is applied. Scene patches are applied to the preview at once
 // and sent one at a time (patches made meanwhile are merged into the next request), so
 // concurrent read-modify-writes on the server cannot lose a change.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { ChatPanel } from "@/components/chat/ChatPanel";
-import { authClient } from "@/lib/auth-client";
 import { patchScene as applyPatch, resolve, viewDirection, type Scene } from "@/lib/scene";
 import type { Face, FaceSelection } from "@/lib/selection";
-import { DEFAULT_UNITS, fmtSize, fmtStep, fmtVolume, parseUnits, reportUnits, UNIT_LABELS, UNITS, UNITS_STORAGE_KEY, type Units } from "@/lib/units";
+import { NO_VIEWER_OPTIONS as NO_OPTIONS, SIDEBAR_SETTING, UNITS_SETTING, useSetting, VIEWER_SETTING } from "@/lib/settings";
+import { fmtSize, fmtStep, fmtVolume, reportUnits, UNIT_LABELS, UNITS, type Units } from "@/lib/units";
 import { api, ApiError, errorMessage, sha256, type BuildSummary, type PartInfo, type Report } from "./api";
 import { Editor } from "./Editor";
 import { History } from "./History";
@@ -41,9 +43,6 @@ import { Viewer, type Vec3, type ViewerOptions } from "./viewer";
 const AUTOSAVE_MS = 800;
 const TOAST_MS = 8000;
 const EMPTY: Record<string, unknown> = {};
-const VIEW_OPTIONS_KEY = "gooey-studio.viewer-options";
-const NO_OPTIONS: ViewerOptions = { edges: false, wireframe: false, grid: false, dims: false, banana: false };
-const SCRIPT_SIDEBAR_KEY = "gooey-studio.script-sidebar";
 
 /** The build whose mesh (and face table) is stored: this one, or the last good one. */
 const meshRev = (b: BuildSummary) => (b.ok ? b.rev : (b.lastGood?.rev ?? b.rev));
@@ -70,6 +69,7 @@ function compose(a: Record<string, unknown>, b: Record<string, unknown>): Record
 }
 
 export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUrl }: { accountEmail: string; isAdmin?: boolean; uploadPrefix: string; interestUrl?: string }) {
+  const router = useRouter();
   const [parts, setParts] = useState<PartInfo[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("editor");
@@ -87,14 +87,15 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
   const [openRender, setOpenRender] = useState<string | null>(null);
   const [renderBusy, setRenderBusy] = useState(false);
   const [sel, setSel] = useState<FaceSelection[]>([]);
-  const [viewOpts, setViewOpts] = useState<ViewerOptions>(NO_OPTIONS);
+  // Viewer toggles and the studio-wide units (what every dimension is shown in, and what new
+  // parts are written in): per-browser settings, also edited on /settings.
+  const [viewOpts, setViewOpts] = useSetting(VIEWER_SETTING);
+  const [units, setUnits] = useSetting(UNITS_SETTING);
   const [gridStep, setGridStep] = useState(0);
-  // The studio-wide units: what every dimension is shown in, and what new parts are written in.
-  const [units, setUnitsState] = useState<Units>(DEFAULT_UNITS);
   const [dirty, setDirty] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
-  // The script | params | look sidebar. Hidden with CSS, so the editor keeps its text and undo.
-  const [sidebar, setSidebar] = useState(true);
+  // The script | params | look sidebar (per browser). Hidden with CSS, so the editor keeps its text and undo.
+  const [sidebar, setSidebar] = useSetting(SIDEBAR_SETTING);
   const [toast, setToast] = useState<{ text: string; id: number } | null>(null);
   const faceTable = useRef<{ rev: number; topology: string } | null>(null);
   const tabRef = useRef<Tab>("script");
@@ -277,6 +278,8 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
     };
     return () => {
       v.dispose();
+      // Requests still in flight after leaving (to /parts or /settings) must not touch it.
+      if (viewer.current === v) viewer.current = null;
     };
   }, []);
 
@@ -288,61 +291,25 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
     viewer.current?.setPicking(mode !== "renders");
   }, [mode]);
 
-  // Viewer toggles, kept in localStorage (read after hydration).
-  useEffect(() => {
-    try {
-      const v = JSON.parse(localStorage.getItem(VIEW_OPTIONS_KEY) ?? "null");
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- reading localStorage once
-      if (v && typeof v === "object") setViewOpts({ ...NO_OPTIONS, ...v });
-    } catch {
-      /* ignore */
-    }
-  }, []);
   useEffect(() => {
     viewer.current?.setOptions(mode === "renders" ? NO_OPTIONS : viewOpts);
   }, [viewOpts, mode]);
-  // The units setting, kept in localStorage (read after hydration).
-  useEffect(() => {
-    const u = parseUnits(localStorage.getItem(UNITS_STORAGE_KEY));
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reading localStorage once
-    if (u) setUnitsState(u);
-  }, []);
   useEffect(() => {
     const v = viewer.current;
     if (!v) return;
     v.setUnits(units);
     setGridStep(v.gridStep);
   }, [units]);
-  const setUnits = (u: Units) => {
-    localStorage.setItem(UNITS_STORAGE_KEY, u);
-    setUnitsState(u);
-  };
-  // The sidebar, kept in localStorage (read after hydration).
-  useEffect(() => {
-    try {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- reading localStorage once
-      if (localStorage.getItem(SCRIPT_SIDEBAR_KEY) === "hidden") setSidebar(false);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-  const showSidebar = useCallback((show: boolean) => {
-    // Keys must not keep going to a hidden editor.
-    const focused = document.activeElement;
-    if (!show && focused instanceof HTMLElement && document.getElementById("script-sidebar")?.contains(focused)) focused.blur();
-    setSidebar(show);
-    try {
-      localStorage.setItem(SCRIPT_SIDEBAR_KEY, show ? "shown" : "hidden");
-    } catch {
-      /* ignore */
-    }
-  }, []);
-  const toggleView = (k: keyof ViewerOptions) =>
-    setViewOpts((o) => {
-      const n = { ...o, [k]: !o[k] };
-      localStorage.setItem(VIEW_OPTIONS_KEY, JSON.stringify(n));
-      return n;
-    });
+  const showSidebar = useCallback(
+    (show: boolean) => {
+      // Keys must not keep going to a hidden editor.
+      const focused = document.activeElement;
+      if (!show && focused instanceof HTMLElement && document.getElementById("script-sidebar")?.contains(focused)) focused.blur();
+      setSidebar(show);
+    },
+    [setSidebar],
+  );
+  const toggleView = (k: keyof ViewerOptions) => setViewOpts({ ...viewOpts, [k]: !viewOpts[k] });
 
   useEffect(() => {
     tabRef.current = tab;
@@ -603,20 +570,15 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
     }
   };
 
-  const deletePart = async () => {
-    if (!current || !confirm(`Delete ${current}.js, its scene, builds and conversation?`)) return;
-    try {
-      await api.deletePart(current);
-      select(null);
-      setScene(null);
-      setBuild(null);
-      setSel([]);
-      viewer.current?.clear();
-      const ps = await loadParts();
-      if (!ps.length) setDoc({ key: "none", text: "" });
-    } catch (e) {
-      setBanner({ text: errorMessage(e) });
-    }
+  /** Leaves for another page (parts, settings), saving a pending edit first. */
+  const leaveTo = async (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; // a new tab or window
+    if (!saved.current || draft.current === saved.current.text) return;
+    e.preventDefault();
+    const href = e.currentTarget.getAttribute("href")!;
+    await save();
+    // A failed save stays here with its banner, so the edit is not lost.
+    if (saved.current && draft.current === saved.current.text) router.push(href);
   };
 
   // --- render mode -----------------------------------------------------------------------
@@ -683,16 +645,6 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
     else frame(next.kind === "still" ? next.view : (next.views[0] ?? PREVIEW));
   };
 
-  const signOut = async () => {
-    try {
-      const { error } = await authClient.signOut();
-      if (error) throw new Error(error.message ?? "Could not sign out.");
-      location.replace("/login");
-    } catch (e) {
-      setBanner({ text: errorMessage(e) });
-    }
-  };
-
   const err = build && !build.ok ? (build.error ?? null) : null;
   const report = build?.ok ? (build.report as Report | undefined) : (goodReport ?? (build?.lastGood?.report as Report | undefined));
   const stale = !!build && !build.ok;
@@ -735,6 +687,9 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
             </option>
           ))}
         </select>
+        <Link className="button" href="/parts" onClick={leaveTo} title="All parts, with previews">
+          Parts
+        </Link>
         <nav className="modes">
           <button className={mode === "editor" ? "on" : ""} onClick={() => setMode("editor")}>
             Editor
@@ -795,15 +750,19 @@ export function Studio({ accountEmail, isAdmin = false, uploadPrefix, interestUr
             STL
           </a>
         )}
-        {current && (
-          <button className="link muted" onClick={deletePart} title="Delete this part">
-            delete
-          </button>
-        )}
-        <span className="muted small account-email" title={isAdmin ? `${accountEmail} (admin)` : accountEmail}>{accountEmail}</span>
-        <button className="link muted" onClick={signOut}>
-          sign out
-        </button>
+        {/* Account, sign-out and preferences. Leaving saves a pending edit first; `part` brings
+            the back link to this part. */}
+        <Link
+          className="button settings-link"
+          href={current ? `/settings?part=${encodeURIComponent(current)}` : "/settings"}
+          prefetch={false}
+          onClick={leaveTo}
+          title={`Settings · ${accountEmail}${isAdmin ? " (admin)" : ""}`}
+          aria-label={`Settings (${accountEmail})`}
+        >
+          <span aria-hidden="true">⚙</span>
+          <span className="account-email">{accountEmail}</span>
+        </Link>
       </header>
       {banner && (
         <div className="banner">

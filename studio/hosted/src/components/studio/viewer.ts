@@ -18,10 +18,9 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { STLLoader } from "three/addons/loaders/STLLoader.js";
-import { toCreasedNormals } from "three/addons/utils/BufferGeometryUtils.js";
 import type { Resolved } from "@/lib/scene";
 import { makeBanana } from "./banana";
+import { parseStl } from "./mesh";
 import type { Face, FaceSelection } from "@/lib/selection";
 import { DEFAULT_UNITS, fmtLength, niceStep, type Units } from "@/lib/units";
 import type { PrintMarks } from "./printability";
@@ -251,15 +250,16 @@ export class Viewer {
     this.controls.dispose();
     this.pmrem.dispose();
     this.renderer.dispose();
+    // Release the context now (after dispose, which unhooks three's context-lost handler):
+    // leaving for the parts screen and coming back mounts a new viewer.
+    this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
   }
 
   /** Replaces the part; keeps the camera unless the part moved or changed size a lot. The
    *  face table must be set right after (`setFaces`): the old one does not fit the new mesh. */
   setMesh(stl: ArrayBuffer) {
-    let geom = new STLLoader().parse(stl);
-    geom.rotateX(-Math.PI / 2); // Z up -> Y up, as `--up z`
-    geom = toCreasedNormals(geom, (30 * Math.PI) / 180);
+    const geom = parseStl(stl);
     geom.computeBoundingSphere();
     geom.computeBoundingBox();
     const sphere = geom.boundingSphere!;
