@@ -64,6 +64,8 @@ export const api = {
   parts: () => call<PartInfo[]>("GET", "/api/parts"),
   createPart: (name: string, units?: Units) => call<{ name: string }>("POST", "/api/parts", { name, units }),
   deletePart: (part: string) => call<{ ok: boolean }>("DELETE", p(part)),
+  /** Writes the example part again (settings); `restored` is false when `example` already exists. */
+  restoreExample: () => call<{ name: string; restored: boolean }>("POST", "/api/example"),
   part: (part: string) => call<PartData>("GET", p(part)),
   putScript: (part: string, source: string, base_sha: string | null) =>
     call<{ sha: string; build: BuildSummary }>("PUT", `${p(part)}/script`, { source, base_sha }),

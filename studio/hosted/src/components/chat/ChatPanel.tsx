@@ -17,6 +17,7 @@ import {
 } from "@/lib/agent-shared";
 import { CHAT_LIMIT, MAX_CHAT_TEXT, type ChatQuota } from "@/lib/chat-quota-shared";
 import type { FaceSelection } from "@/lib/selection";
+import { MODEL_SETTING, readSetting, writeSetting } from "@/lib/settings";
 import { DEFAULT_UNITS, fmtLength, parseUnits, type Units } from "@/lib/units";
 import styles from "./ChatPanel.module.css";
 
@@ -38,7 +39,6 @@ export type ChatPanelProps = {
 type ModelInfo = { id: string; label: string; vendor: string; via: string; vision?: boolean; available: boolean };
 type ModelList = { default: string; models: ModelInfo[] };
 
-const MODEL_KEY = "gooey-studio.agent-model";
 let modelsPromise: Promise<ModelList> | null = null;
 
 function loadModels(): Promise<ModelList> {
@@ -138,8 +138,8 @@ function PartChat({ part, interestUrl, onPartChanged, onBusyChange, selection = 
       .then((list) => {
         if (!live) return;
         setModels(list);
-        const stored = localStorage.getItem(MODEL_KEY);
-        const pick = list.models.some((m) => m.id === stored) ? stored! : list.default;
+        const stored = readSetting(MODEL_SETTING);
+        const pick = stored && list.models.some((m) => m.id === stored) ? stored : list.default;
         setModel(pick);
       })
       .catch((e) => live && setNote({ text: `could not load the models: ${e.message}`, err: true }));
@@ -248,7 +248,7 @@ function PartChat({ part, interestUrl, onPartChanged, onBusyChange, selection = 
 
   const pickModel = (id: string) => {
     setModel(id);
-    localStorage.setItem(MODEL_KEY, id);
+    writeSetting(MODEL_SETTING, id);
   };
 
   const send = () => {

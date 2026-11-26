@@ -4,8 +4,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { authClient } from "@/lib/auth-client";
-import { DEFAULT_UNITS, fmtSize, parseUnits, UNITS_STORAGE_KEY, type Units } from "@/lib/units";
+import { UNITS_SETTING, useSetting } from "@/lib/settings";
+import { fmtSize, type Units } from "@/lib/units";
 import { api, errorMessage, type PartInfo } from "./api";
 import { cachedThumbnail, thumbnail, type Thumb } from "./thumbnails";
 import styles from "./Parts.module.css";
@@ -29,13 +29,10 @@ export function Parts({ accountEmail, isAdmin = false }: { accountEmail: string;
   const [creating, setCreating] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
-  // New parts are written in the studio's units setting (kept per browser by the studio).
-  const [units, setUnits] = useState<Units>(DEFAULT_UNITS);
+  // New parts are written in the studio's units setting (per browser).
+  const [units] = useSetting(UNITS_SETTING);
 
   useEffect(() => {
-    const u = parseUnits(localStorage.getItem(UNITS_STORAGE_KEY));
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reading localStorage once
-    if (u) setUnits(u);
     api.parts().then(setParts, (e) => setError(errorMessage(e)));
   }, []);
 
@@ -62,16 +59,6 @@ export function Parts({ accountEmail, isAdmin = false }: { accountEmail: string;
       setError(errorMessage(e));
     } finally {
       setDeleting(null);
-    }
-  };
-
-  const signOut = async () => {
-    try {
-      const { error } = await authClient.signOut();
-      if (error) throw new Error(error.message ?? "Could not sign out.");
-      location.replace("/login");
-    } catch (e) {
-      setError(errorMessage(e));
     }
   };
 
@@ -115,12 +102,16 @@ export function Parts({ accountEmail, isAdmin = false }: { accountEmail: string;
           </form>
         )}
         <span className="spacer" />
-        <span className="muted small account-email" title={isAdmin ? `${accountEmail} (admin)` : accountEmail}>
-          {accountEmail}
-        </span>
-        <button className="link muted" onClick={signOut}>
-          sign out
-        </button>
+        <Link
+          className="button settings-link"
+          href="/settings"
+          prefetch={false}
+          title={`Settings · ${accountEmail}${isAdmin ? " (admin)" : ""}`}
+          aria-label={`Settings (${accountEmail})`}
+        >
+          <span aria-hidden="true">⚙</span>
+          <span className="account-email">{accountEmail}</span>
+        </Link>
       </header>
       {error && (
         <div className="banner">
